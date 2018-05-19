@@ -13,6 +13,6 @@ nim c -r -d:release -d:useStdlib benchmark.nim
 On my machine, I got these results:
 
 ```
-packed json:  used Mem: 140.063MiB time: 3.127s
+packed json:  used Mem: 94.06MiB time: 2.622s
 stdlib json:  used Mem: 1.277GiB time: 3.759s
 ```
