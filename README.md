@@ -16,3 +16,8 @@ On my machine, I got these results:
 packed json:  used Mem: 94.06MiB time: 2.622s
 stdlib json:  used Mem: 1.277GiB time: 3.759s
 ```
+
+# Todo
+
+- Make the API a complete drop-in replacement for ``json.nim``.
+- Tests, tests, tests!
