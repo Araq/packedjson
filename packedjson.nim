@@ -341,6 +341,49 @@ proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
         obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
       inc obj.b, diff
 
+proc delete*(x: JsonNode, key: string) =
+  ## Deletes ``x[key]``.
+  assert x.kind == JObject
+  var pos = x.a+1
+  var dummy: int
+  while true:
+    let k2 = x.t[pos] and opcodeMask
+    if k2 == opcodeEnd: break
+
+    assert k2 == opcodeString, $k2
+    let begin = pos
+    let (start, L) = extractSlice(x.t[], pos)
+    # compare for the key without creating the temp string:
+    var isMatch = key.len == L
+    if isMatch:
+      for i in 0 ..< L:
+        if key[i] != char(x.t[start+i]):
+          isMatch = false
+          break
+    pos = start + L
+
+    let k = x.t[pos] and opcodeMask
+    var nextPos = pos + 1
+    case k
+    of opcodeNull, opcodeBool: discard
+    of opcodeInt, opcodeFloat, opcodeString:
+      let L = extractLen(x.t[], pos)
+      nextPos = pos + 1 + L
+    of opcodeObject, opcodeArray:
+      nextPos = skip(x.t[], pos+1, dummy)
+    of opcodeEnd: doAssert false, "unexpected end of object"
+    else: discard
+    if isMatch:
+      let diff = nextPos - begin
+      let oldfull = x.t[].len
+      for i in countup(begin, oldfull-diff-1): shallowCopy(x.t[][i], x.t[][i+diff])
+      setLen(x.t[], oldfull-diff)
+      return
+    pos = nextPos
+  # for compatibility with json.nim, we need to raise an exception
+  # here. Not sure it's good idea.
+  raise newException(KeyError, "key not in object")
+
 proc `%`*(s: string): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
   newJString(s)
@@ -421,7 +464,7 @@ macro `%*`*(x: untyped): untyped =
 when false:
   # XXX Todo for compat with json.nim:
 
-  proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
+  proc `{}=`*(node: var JsonNode, keys: varargs[string], value: JsonNode) =
     ## Traverses the node and tries to set the value at the given location
     ## to ``value``. If any of the keys are missing, they are added.
     var node = node
@@ -430,13 +473,6 @@ when false:
         node[keys[i]] = newJObject()
       node = node[keys[i]]
     node[keys[keys.len-1]] = value
-
-  proc delete*(obj: JsonNode, key: string) =
-    ## Deletes ``obj[key]``.
-    assert(obj.kind == JObject)
-    if not obj.fields.hasKey(key):
-      raise newException(IndexError, "key not in object")
-    obj.fields.del(key)
 
 proc copy*(n: JsonNode): JsonNode =
   ## Performs a deep copy of `a`.
@@ -814,4 +850,7 @@ when isMainModule:
   echo moreStuff
   moreStuff["more"] = %"a"
   moreStuff["null"] = %678
+
+  moreStuff.delete "more"
+
   echo moreStuff
