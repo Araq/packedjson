@@ -12,6 +12,26 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
+##[ **Note**: Aliasing of JSON objects does not work as in ``json.nim``.
+
+.. code-block:: nim
+    var x = newJObject()
+    var arr = newJArray()
+    arr.add x
+    x["field"] = %"value"
+    assert $arr == "[{}]"
+
+However, aliasing after creation affects the original:
+
+.. code-block:: nim
+    var arr = newJArray()
+    arr.add newJObject()
+    var x = arr[0]
+    x["field"] = %"value"
+    assert $arr == """[{"field":"value"}]"""
+
+This problem will be addressed in future versions of the module. ]##
+
 import parsejson, parseutils, streams, strutils, macros
 from unicode import toUTF8, Rune
 
@@ -816,23 +836,55 @@ when isMainModule:
       result[i] = char(b[start+i])
     echo result
 
-  let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
-  echo testJson
-  echo testJson{"d"}
+  template test(a, b) =
+    let x = a
+    if x != b:
+      echo "test failed ", astToStr(a), ":"
+      echo x
+      echo b
 
-  echo testJson{"a"}[3]
+  let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
+  test $testJson{"a"}[3], "4"
 
   var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
-  echo moreStuff
+  test $moreStuff, """{"abc":3,"more":6.600000000000000,"null":null}"""
 
   moreStuff["more"] = %"foo bar"
-  echo moreStuff
+  test $moreStuff, """{"abc":3,"more":"foo bar","null":null}"""
+
   moreStuff["more"] = %"a"
   moreStuff["null"] = %678
 
+  test $moreStuff, """{"abc":3,"more":"a","null":678}"""
+
   moreStuff.delete "more"
+  test $moreStuff, """{"abc":3,"null":678}"""
 
   moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+
+  test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
+
+  # now let's test aliasing works:
+  moreStuff["alias"] = newJObject()
+  var aa = moreStuff["alias"]
+
+  aa["a"] = %1
+  aa["b"] = %3
+
+  delete moreStuff, "keyOne"
+  test $moreStuff, """{"abc":3,"null":678,"alias":{"a":1,"b":3}}"""
   #moreStuff["keyOne"] = %*{"abc": 3, "more": 6.6, "null": nil}
 
-  echo moreStuff
+  block:
+    var x = newJObject()
+    var arr = newJArray()
+    arr.add x
+    x["field"] = %"value"
+    assert $arr == "[{}]"
+
+  block:
+    var arr = newJArray()
+    arr.add newJObject()
+    var x = arr[0]
+    x["field"] = %"value"
+    assert $arr == """[{"field":"value"}]"""
