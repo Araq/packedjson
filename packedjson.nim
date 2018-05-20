@@ -12,7 +12,7 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
-import parsejson, parseutils, streams
+import parsejson, parseutils, streams, strutils, macros
 from unicode import toUTF8, Rune
 
 import std / varints
@@ -76,98 +76,58 @@ proc endContainer(buf: var seq[byte]) = buf.add byte(opcodeEnd)
 type
   JsonNode* = object
     k: JsonNodeKind
-    a: int
+    a, b: int
     t: ref seq[byte]
 
 proc newJNull*(): JsonNode =
   ## Creates a new `JNull JsonNode`.
   result.k = JNull
 
-when false:
-  proc newJString*(s: string): JsonNode =
-    ## Creates a new `JString JsonNode`.
-    doAssert s.len > 0 and s[0] == '"'
-    new(result.t)
-    result.t[] = s
-    result.a = 0
-    result.b = high(result.t[])
+template newBody(kind, x) =
+  new(result.t)
+  result.t[] = @[]
+  storeAtom(result.t[], kind, x)
+  result.a = 0
+  result.b = high(result.t[])
+  result.k = kind
 
-  proc newJInt*(n: BiggestInt): JsonNode =
-    ## Creates a new `JInt JsonNode`.
-    new(result.t)
-    result.t[] = $opcodeInt & $n
-    result.a = 0
-    result.b = high(result.t[])
+proc newJString*(s: string): JsonNode =
+  ## Creates a new `JString JsonNode`.
+  newBody JString, s
 
-  proc newJFloat*(n: float): JsonNode =
-    ## Creates a new `JFloat JsonNode`.
-    new(result.t)
-    result.t[] = $opcodeFloat & $n # XXX Ensure no precision is lost here
-    result.a = 0
-    result.b = high(result.t[])
+proc newJInt*(n: BiggestInt): JsonNode =
+  ## Creates a new `JInt JsonNode`.
+  newBody JInt, $n
 
-  proc newJBool*(b: bool): JsonNode =
-    ## Creates a new `JBool JsonNode`.
-    new(result.t)
-    result.t[] = $opcodeBool & (if b: 't' else: 'f')
-    result.a = 0
-    result.b = high(result.t[])
+proc newJFloat*(n: float): JsonNode =
+  ## Creates a new `JFloat JsonNode`.
+  newBody JFloat, formatFloat(n)
 
-  proc newJObject*(): JsonNode =
-    ## Creates a new `JObject JsonNode`
-    new(result.t)
-    result.t[] = opcodeObject & "\0\1"
-    result.a = 0
-    result.b = high(result.t[])
+proc newJBool*(b: bool): JsonNode =
+  ## Creates a new `JBool JsonNode`.
+  result.k = JBool
+  new(result.t)
+  result.t[] = @[if b: byte(opcodeTrue) else: byte(opcodeFalse)]
+  result.a = 0
+  result.b = high(result.t[])
 
-  proc newJArray*(): JsonNode =
-    ## Creates a new `JArray JsonNode`
-    new(result.t)
-    result.t[] = opcodeArray & "\0\1"
-    result.a = 0
-    result.b = high(result.t[])
+proc newJObject*(): JsonNode =
+  ## Creates a new `JObject JsonNode`
+  result.k = JObject
+  new(result.t)
+  result.t[] = @[byte opcodeObject, byte opcodeEnd]
+  result.a = 0
+  result.b = high(result.t[])
 
-when false:
-  proc `%`*(s: string): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
-    new(result)
-    result.kind = JString
-    result.str = s
-
-  proc `%`*(n: BiggestInt): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JInt JsonNode`.
-    new(result)
-    result.kind = JInt
-    result.num  = n
-
-  proc `%`*(n: float): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JFloat JsonNode`.
-    new(result)
-    result.kind = JFloat
-    result.fnum  = n
-
-  proc `%`*(b: bool): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JBool JsonNode`.
-    new(result)
-    result.kind = JBool
-    result.bval = b
-
-  proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
-    if keyvals.len == 0: return newJArray()
-    result = newJObject()
-    for key, val in items(keyVals): result.fields[key] = val
-
-  template `%`*(j: JsonNode): JsonNode = j
-
-  proc `%`*[T](elements: openArray[T]): JsonNode =
-    ## Generic constructor for JSON data. Creates a new `JArray JsonNode`
-    result = newJArray()
-    for elem in elements: result.add(%elem)
+proc newJArray*(): JsonNode =
+  ## Creates a new `JArray JsonNode`
+  result.k = JArray
+  new(result.t)
+  result.t[] = @[byte opcodeArray, byte opcodeEnd]
+  result.a = 0
+  result.b = high(result.t[])
 
 proc kind*(x: JsonNode): JsonNodeKind = x.k
-
-#proc next(x: JsonNode): JsonNode =
 
 proc extractLen(x: seq[byte]; pos: int): int =
   if (x[pos] and 0b1111_1000u8) != 0b1111_1000u8:
@@ -228,7 +188,7 @@ iterator items*(x: JsonNode): JsonNode =
       nextPos = skip(x.t[], pos+1, dummy)
     of opcodeEnd: break
     else: discard
-    yield JsonNode(k: JsonNodeKind(k), a: pos, t: x.t)
+    yield JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
     pos = nextPos
 
 iterator pairs*(x: JsonNode): (string, JsonNode) =
@@ -258,7 +218,7 @@ iterator pairs*(x: JsonNode): (string, JsonNode) =
       nextPos = skip(x.t[], pos+1, dummy)
     of opcodeEnd: doAssert false, "unexpected end of object"
     else: discard
-    yield (key, JsonNode(k: JsonNodeKind(k), a: pos, t: x.t))
+    yield (key, JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t))
     pos = nextPos
 
 
@@ -306,7 +266,7 @@ else:
       of opcodeEnd: doAssert false, "unexpected end of object"
       else: discard
       if isMatch:
-        return JsonNode(k: JsonNodeKind(k), a: pos, t: x.t)
+        return JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
       pos = nextPos
     raise newException(KeyError, "key not found in object: " & name)
 
@@ -319,24 +279,160 @@ proc len*(n: JsonNode): int =
   # divide by two because we counted the pairs wrongly:
   if n.k == JObject: result = result shr 1
 
-when false:
-  proc rawAdd(parent: var JsonNode; child: string; a, b: int) =
-    let tail = substr(parent.t[], parent.b)
-    let pa = parent.b
-    let L = b - a + 1
-    setLen(parent.t[], parent.t[].len + L + 1)
-    for i in 0 ..< L:
-      parent.t[][pa + i] = child[a + i]
-    parent.t[][pa + L] = space
-    let pa2 = pa + L + 1
-    for i in 0 ..< tail.len:
-      parent.t[][pa2 + i] = tail[i]
-    inc parent.b, L + 1
+proc rawAdd(parent: var JsonNode; child: seq[byte]; a, b: int) =
+  let pa = parent.b
+  let L = b - a + 1
+  let oldLen = parent.t[].len
+  let newLen = oldLen + L
+  setLen(parent.t[], newLen)
+  # now move the tail to the new end so that we can insert effectively
+  # into the middle:
+  for i in pa .. oldLen-1:
+    parent.t[][L + i] = parent.t[][i]
+  # insert into the middle:
+  for i in 0 ..< L:
+    parent.t[][pa + i] = child[a + i]
+  inc parent.b, L
 
-  proc add*(parent: var JsonNode; child: JsonNode) =
-    doAssert parent.kind == JArray, "parent is not a JArray"
+proc rawAddWithNull(parent: var JsonNode; child: JsonNode) =
+  if child.k == JNull:
+    let pa = parent.b
+    let oldLen = parent.t[].len
+    setLen(parent.t[], oldLen + 1)
+    for i in pa .. oldLen-1:
+      parent.t[][1 + i] = parent.t[][i]
+    parent.t[][pa] = byte opcodeNull
+    inc parent.b, 1
+  else:
     rawAdd(parent, child.t[], child.a, child.b)
 
+proc add*(parent: var JsonNode; child: JsonNode) =
+  doAssert parent.kind == JArray, "parent is not a JArray"
+  rawAddWithNull(parent, child)
+
+proc add*(obj: var JsonNode, key: string, val: JsonNode) =
+  ## Sets a field from a `JObject`. **Warning**: It is currently not checked
+  ## but assumed that the object does not yet have a field named `key`.
+  assert obj.kind == JObject
+  let k = newJstring(key)
+  # XXX optimize this further!
+  rawAdd(obj, k.t[], 0, high(k.t[]))
+  rawAddWithNull(obj, val)
+  when false:
+    discard "XXX assert that the key does not exist yet"
+
+when false:
+  # too dangerous, better implement it properly!
+  proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
+    ## An alias for ``add``. **Warning**: It is currently not checked
+    ## but assumed that the object does not yet have a field named `key`.
+    add(obj, key, val)
+
+proc `%`*(s: string): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
+  newJString(s)
+
+proc `%`*(n: BiggestInt): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JInt JsonNode`.
+  newJInt(n)
+
+proc `%`*(n: float): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JFloat JsonNode`.
+  result = newJFloat(n)
+
+proc `%`*(b: bool): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JBool JsonNode`.
+  result = newJBool(b)
+
+template `%`*(j: JsonNode): JsonNode = j
+
+proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
+  if keyvals.len == 0: return newJArray()
+  result = newJObject()
+  for key, val in items(keyVals): result.add key, val
+
+proc `%`*[T](elements: openArray[T]): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JArray JsonNode`
+  result = newJArray()
+  for elem in elements: result.add(%elem)
+
+proc `%`*(o: object): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
+  result = newJObject()
+  for k, v in o.fieldPairs: result[k] = %v
+
+proc `%`*(o: ref object): JsonNode =
+  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
+  if o.isNil:
+    result = newJNull()
+  else:
+    result = %(o[])
+
+proc `%`*(o: enum): JsonNode =
+  ## Construct a JsonNode that represents the specified enum value as a
+  ## string. Creates a new ``JString JsonNode``.
+  result = %($o)
+
+proc toJson(x: NimNode): NimNode {.compiletime.} =
+  case x.kind
+  of nnkBracket: # array
+    if x.len == 0: return newCall(bindSym"newJArray")
+    result = newNimNode(nnkBracket)
+    for i in 0 ..< x.len:
+      result.add(toJson(x[i]))
+    result = newCall(bindSym"%", result)
+  of nnkTableConstr: # object
+    if x.len == 0: return newCall(bindSym"newJObject")
+    result = newNimNode(nnkTableConstr)
+    for i in 0 ..< x.len:
+      x[i].expectKind nnkExprColonExpr
+      result.add newTree(nnkExprColonExpr, x[i][0], toJson(x[i][1]))
+    result = newCall(bindSym"%", result)
+  of nnkCurly: # empty object
+    x.expectLen(0)
+    result = newCall(bindSym"newJObject")
+  of nnkNilLit:
+    result = newCall(bindSym"newJNull")
+  of nnkPar:
+    if x.len == 1: result = toJson(x[0])
+    else: result = newCall(bindSym"%", x)
+  else:
+    result = newCall(bindSym"%", x)
+
+macro `%*`*(x: untyped): untyped =
+  ## Convert an expression to a JsonNode directly, without having to specify
+  ## `%` for every element.
+  result = toJson(x)
+
+when false:
+  # XXX Todo for compat with json.nim:
+
+  proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
+    ## Traverses the node and tries to set the value at the given location
+    ## to ``value``. If any of the keys are missing, they are added.
+    var node = node
+    for i in 0..(keys.len-2):
+      if not node.hasKey(keys[i]):
+        node[keys[i]] = newJObject()
+      node = node[keys[i]]
+    node[keys[keys.len-1]] = value
+
+  proc delete*(obj: JsonNode, key: string) =
+    ## Deletes ``obj[key]``.
+    assert(obj.kind == JObject)
+    if not obj.fields.hasKey(key):
+      raise newException(IndexError, "key not in object")
+    obj.fields.del(key)
+
+proc copy*(n: JsonNode): JsonNode =
+  ## Performs a deep copy of `a`.
+  result.k = n.k
+  result.a = n.a
+  result.b = n.b
+  if n.t != nil:
+    new(result.t)
+    result.t[] = n.t[]
 
 proc getStr*(n: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString JsonNode`.
@@ -404,12 +500,6 @@ when false:
     ## Returns ``default`` if ``n`` is not a ``JArray``, or if ``n`` is nil.
     if n.kind != JArray: return default
     else: return n.elems
-
-  proc add*(father, child: JsonNode) =
-    ## Adds `child` to a JArray node `father`.
-    assert father.kind == JArray
-    father.elems.add(child)
-
 
 template escape(result, c) =
   case c
@@ -549,24 +639,6 @@ proc `$`*(node: JsonNode): string =
   result = newStringOfCap(node.len shl 1)
   toUgly(result, node)
 
-when false:
-  proc add*(obj: var JsonNode, key: string, val: JsonNode) =
-    ## Sets a field from a `JObject`. **Warning**: It is currently not checked
-    ## but assumed that the object does not yet have a field named `key`.
-    assert obj.kind == JObject
-    let k = escapeJson(key)
-    rawAdd(obj, k, 0, high(k))
-    rawAdd(obj, val.t[], val.a, val.b)
-    when false:
-      # XXX assert that the key does not exist yet
-      obj.fields[key] = val
-
-      var pos = obj.a+2
-      while hasNext(x, pos):
-        let c = nextPair(x, pos)
-
-        pos = c[1].b+2 # also skip the separator/terminator
-
 proc `[]`*(node: JsonNode, index: int): JsonNode =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
   ## is out of bounds, but as long as array bound checks are enabled it will
@@ -687,6 +759,7 @@ proc parseJson*(s: Stream, filename: string = ""): JsonNode =
     discard getTok(p) # read first token
     p.parseJson(result.t[])
     result.a = 0
+    result.b = high(result.t[])
     result.k = JsonNodeKind(result.t[][0] and opcodeMask)
     eat(p, tkEof) # check if there is no extra data
   finally:
@@ -720,3 +793,6 @@ when isMainModule:
   echo testJson{"d"}
 
   echo testJson{"a"}[3]
+
+  let moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
+  echo moreStuff
