@@ -272,20 +272,19 @@ proc len*(n: JsonNode): int =
   # divide by two because we counted the pairs wrongly:
   if n.k == JObject: result = result shr 1
 
-proc rawAdd(parent: var JsonNode; child: seq[byte]; a, b: int) =
-  let pa = parent.b
+proc rawAdd(obj: var JsonNode; child: seq[byte]; a, b: int) =
+  let pa = obj.b
   let L = b - a + 1
-  let oldLen = parent.t[].len
-  let newLen = oldLen + L
-  setLen(parent.t[], newLen)
+  let oldfull = obj.t[].len
+  setLen(obj.t[], oldfull+L)
   # now move the tail to the new end so that we can insert effectively
   # into the middle:
-  for i in pa .. oldLen-1:
-    parent.t[][L + i] = parent.t[][i]
+  for i in countdown(oldfull+L-1, pa+L):
+    shallowCopy(obj.t[][i], obj.t[][i-L])
   # insert into the middle:
   for i in 0 ..< L:
-    parent.t[][pa + i] = child[a + i]
-  inc parent.b, L
+    obj.t[][pa + i] = child[a + i]
+  inc obj.b, L
 
 proc rawAddWithNull(parent: var JsonNode; child: JsonNode) =
   if child.k == JNull:
@@ -341,7 +340,7 @@ proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
         obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
       inc obj.b, diff
 
-proc delete*(x: JsonNode, key: string) =
+proc delete*(x: var JsonNode, key: string) =
   ## Deletes ``x[key]``.
   assert x.kind == JObject
   var pos = x.a+1
@@ -378,6 +377,7 @@ proc delete*(x: JsonNode, key: string) =
       let oldfull = x.t[].len
       for i in countup(begin, oldfull-diff-1): shallowCopy(x.t[][i], x.t[][i+diff])
       setLen(x.t[], oldfull-diff)
+      dec x.b, diff
       return
     pos = nextPos
   # for compatibility with json.nim, we need to raise an exception
@@ -461,19 +461,6 @@ macro `%*`*(x: untyped): untyped =
   ## `%` for every element.
   result = toJson(x)
 
-when false:
-  # XXX Todo for compat with json.nim:
-
-  proc `{}=`*(node: var JsonNode, keys: varargs[string], value: JsonNode) =
-    ## Traverses the node and tries to set the value at the given location
-    ## to ``value``. If any of the keys are missing, they are added.
-    var node = node
-    for i in 0..(keys.len-2):
-      if not node.hasKey(keys[i]):
-        node[keys[i]] = newJObject()
-      node = node[keys[i]]
-    node[keys[keys.len-1]] = value
-
 proc copy*(n: JsonNode): JsonNode =
   ## Performs a deep copy of `a`.
   result.k = n.k
@@ -532,23 +519,6 @@ proc getBool*(n: JsonNode, default: bool = false): bool =
 proc isEmpty(n: JsonNode): bool =
   assert n.kind in {JArray, JObject}
   result = n.t[n.a+1] == opcodeEnd
-
-when false:
-  proc getFields*(n: JsonNode,
-      default = initOrderedTable[string, JsonNode](4)):
-          OrderedTable[string, JsonNode] =
-    ## Retrieves the key, value pairs of a `JObject JsonNode`.
-    ##
-    ## Returns ``default`` if ``n`` is not a ``JObject``, or if ``n`` is nil.
-    if n.kind != JObject: return default
-    else: return n.fields
-
-  proc getElems*(n: JsonNode, default: seq[JsonNode] = @[]): seq[JsonNode] =
-    ## Retrieves the array of a `JArray JsonNode`.
-    ##
-    ## Returns ``default`` if ``n`` is not a ``JArray``, or if ``n`` is nil.
-    if n.kind != JArray: return default
-    else: return n.elems
 
 template escape(result, c) =
   case c
@@ -702,9 +672,8 @@ proc `[]`*(node: JsonNode, index: int): JsonNode =
 proc contains*(node: JsonNode, key: string): bool =
   ## Checks if `key` exists in `node`.
   assert(node.kind == JObject)
-  for k, v in pairs(node):
-    if k == key: return true
-  result = false
+  let x = rawGet(node, key)
+  result = x.a >= 0
 
 proc hasKey*(node: JsonNode, key: string): bool =
   ## Checks if `key` exists in `node`.
@@ -740,6 +709,16 @@ proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
           break searchLoop
         dec i
       return newJNull()
+
+proc `{}=`*(node: var JsonNode, keys: varargs[string], value: JsonNode) =
+  ## Traverses the node and tries to set the value at the given location
+  ## to ``value``. If any of the keys are missing, they are added.
+  var n = node
+  for i in 0..(keys.len-2):
+    if not n.hasKey(keys[i]):
+      n[keys[i]] = newJObject()
+    n = n[keys[i]]
+  n[keys[keys.len-1]] = value
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
   ## Gets a field from a `node`. If `node` is nil or not an object or
@@ -852,5 +831,8 @@ when isMainModule:
   moreStuff["null"] = %678
 
   moreStuff.delete "more"
+
+  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  #moreStuff["keyOne"] = %*{"abc": 3, "more": 6.6, "null": nil}
 
   echo moreStuff

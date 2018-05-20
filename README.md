@@ -1,5 +1,10 @@
 # packedjson
-packedjson is an alternative Nim implementation for JSON. The JSON is essentially kept as a single string in order to save memory over a more traditional tree representation.
+packedjson is an alternative Nim implementation for JSON.
+The JSON is essentially kept as a single string in order to
+save memory over a more traditional tree representation.
+
+The API is mostly compatible with the stdlib's ``json.nim`` module,
+some features have been cut though.
 
 # To compile the benchmark, run these commands:
 
@@ -19,5 +24,4 @@ stdlib json:  used Mem: 1.277GiB time: 3.759s
 
 # Todo
 
-- Make the API a complete drop-in replacement for ``json.nim``.
 - Tests, tests, tests!
