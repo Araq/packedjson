@@ -221,53 +221,46 @@ iterator pairs*(x: JsonNode): (string, JsonNode) =
     yield (key, JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t))
     pos = nextPos
 
+proc rawGet(x: JsonNode; name: string): JsonNode =
+  assert x.kind == JObject
+  var pos = x.a+1
+  var dummy: int
+  while true:
+    let k2 = x.t[pos] and opcodeMask
+    if k2 == opcodeEnd: break
 
-when false:
-  proc `[]`*(node: JsonNode, name: string): JsonNode =
-    ## Gets a field from a `JObject`.
-    ## If the value at `name` does not exist, raises KeyError.
-    assert(node.kind == JObject)
-    for k, v in pairs(node):
-      if k == name: return v
-    raise newException(KeyError, "key not found in object: " & name)
+    assert k2 == opcodeString, $k2
+    let (start, L) = extractSlice(x.t[], pos)
+    # compare for the key without creating the temp string:
+    var isMatch = name.len == L
+    if isMatch:
+      for i in 0 ..< L:
+        if name[i] != char(x.t[start+i]):
+          isMatch = false
+          break
+    pos = start + L
 
-else:
-  # specialized, optimized version:
-  proc `[]`*(x: JsonNode; name: string): JsonNode =
-    ## Gets a field from a `JObject`.
-    ## If the value at `name` does not exist, raises KeyError.
-    assert x.kind == JObject
-    var pos = x.a+1
-    var dummy: int
-    while true:
-      let k2 = x.t[pos] and opcodeMask
-      if k2 == opcodeEnd: break
+    let k = x.t[pos] and opcodeMask
+    var nextPos = pos + 1
+    case k
+    of opcodeNull, opcodeBool: discard
+    of opcodeInt, opcodeFloat, opcodeString:
+      let L = extractLen(x.t[], pos)
+      nextPos = pos + 1 + L
+    of opcodeObject, opcodeArray:
+      nextPos = skip(x.t[], pos+1, dummy)
+    of opcodeEnd: doAssert false, "unexpected end of object"
+    else: discard
+    if isMatch:
+      return JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
+    pos = nextPos
+  result.a = -1
 
-      assert k2 == opcodeString, $k2
-      let (start, L) = extractSlice(x.t[], pos)
-      # compare for the key without creating the temp string:
-      var isMatch = name.len == L
-      if isMatch:
-        for i in 0 ..< L:
-          if name[i] != char(x.t[start+i]):
-            isMatch = false
-            break
-      pos = start + L
-
-      let k = x.t[pos] and opcodeMask
-      var nextPos = pos + 1
-      case k
-      of opcodeNull, opcodeBool: discard
-      of opcodeInt, opcodeFloat, opcodeString:
-        let L = extractLen(x.t[], pos)
-        nextPos = pos + 1 + L
-      of opcodeObject, opcodeArray:
-        nextPos = skip(x.t[], pos+1, dummy)
-      of opcodeEnd: doAssert false, "unexpected end of object"
-      else: discard
-      if isMatch:
-        return JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
-      pos = nextPos
+proc `[]`*(x: JsonNode; name: string): JsonNode =
+  ## Gets a field from a `JObject`.
+  ## If the value at `name` does not exist, raises KeyError.
+  result = rawGet(x, name)
+  if result.a < 0:
     raise newException(KeyError, "key not found in object: " & name)
 
 proc len*(n: JsonNode): int =
@@ -321,12 +314,32 @@ proc add*(obj: var JsonNode, key: string, val: JsonNode) =
   when false:
     discard "XXX assert that the key does not exist yet"
 
-when false:
-  # too dangerous, better implement it properly!
-  proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
-    ## An alias for ``add``. **Warning**: It is currently not checked
-    ## but assumed that the object does not yet have a field named `key`.
+proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
+  let oldval = rawGet(obj, key)
+  if oldval.a < 0:
     add(obj, key, val)
+  else:
+    let oldlen = oldval.b - oldval.a + 1
+    let newlen = val.b - val.a + 1
+    if oldlen == newlen:
+      for i in 0 ..< newlen:
+        obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+    else:
+      let diff = newlen - oldlen
+      let oldfull = obj.t[].len
+      if newlen > oldlen:
+        setLen(obj.t[], oldfull+diff)
+        # now move the tail to the new end so that we can insert effectively
+        # into the middle:
+        for i in countdown(oldfull+diff-1, oldval.a+newlen): shallowCopy(obj.t[][i], obj.t[][i-diff])
+      else:
+        for i in countup(oldval.a+newlen, oldfull+diff-1): shallowCopy(obj.t[][i], obj.t[][i-diff])
+        # cut down:
+        setLen(obj.t[], oldfull+diff)
+      # overwrite old value:
+      for i in 0 ..< newlen:
+        obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+      inc obj.b, diff
 
 proc `%`*(s: string): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
@@ -794,5 +807,11 @@ when isMainModule:
 
   echo testJson{"a"}[3]
 
-  let moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
+  var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
+  echo moreStuff
+
+  moreStuff["more"] = %"foo bar"
+  echo moreStuff
+  moreStuff["more"] = %"a"
+  moreStuff["null"] = %678
   echo moreStuff
