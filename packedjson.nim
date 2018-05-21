@@ -196,7 +196,7 @@ iterator items*(x: JsonNode): JsonNode =
   assert x.kind == JArray
   var pos = x.a+1
   var dummy: int
-  while true:
+  while pos <= x.b:
     let k = x.t[pos] and opcodeMask
     var nextPos = pos + 1
     case k
@@ -217,7 +217,7 @@ iterator pairs*(x: JsonNode): (string, JsonNode) =
   var pos = x.a+1
   var dummy: int
   var key = newStringOfCap(60)
-  while true:
+  while pos <= x.b:
     let k2 = x.t[pos] and opcodeMask
     if k2 == opcodeEnd: break
 
@@ -245,7 +245,7 @@ proc rawGet(x: JsonNode; name: string): JsonNode =
   assert x.kind == JObject
   var pos = x.a+1
   var dummy: int
-  while true:
+  while pos <= x.b:
     let k2 = x.t[pos] and opcodeMask
     if k2 == opcodeEnd: break
 
@@ -365,7 +365,7 @@ proc delete*(x: var JsonNode, key: string) =
   assert x.kind == JObject
   var pos = x.a+1
   var dummy: int
-  while true:
+  while pos <= x.b:
     let k2 = x.t[pos] and opcodeMask
     if k2 == opcodeEnd: break
 
@@ -402,7 +402,7 @@ proc delete*(x: var JsonNode, key: string) =
     pos = nextPos
   # for compatibility with json.nim, we need to raise an exception
   # here. Not sure it's good idea.
-  raise newException(KeyError, "key not in object")
+  raise newException(KeyError, "key not in object: " & key)
 
 proc `%`*(s: string): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
@@ -733,12 +733,15 @@ proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
 proc `{}=`*(node: var JsonNode, keys: varargs[string], value: JsonNode) =
   ## Traverses the node and tries to set the value at the given location
   ## to ``value``. If any of the keys are missing, they are added.
-  var n = node
-  for i in 0..(keys.len-2):
-    if not n.hasKey(keys[i]):
-      n[keys[i]] = newJObject()
-    n = n[keys[i]]
-  n[keys[keys.len-1]] = value
+  if keys.len == 1:
+    node[keys[0]] = value
+  elif keys.len != 0:
+    var v = value
+    for i in countdown(keys.len-1, 1):
+      var x = newJObject()
+      x[keys[i]] = v
+      v = x
+    node[keys[0]] = v
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
   ## Gets a field from a `node`. If `node` is nil or not an object or
@@ -746,6 +749,17 @@ proc getOrDefault*(node: JsonNode, key: string): JsonNode =
   for k, v in pairs(node):
     if k == key: return v
   result = newJNull()
+
+proc `==`*(x, y: JsonNode): bool =
+  # Equality for two JsonNodes. Note that the order in field
+  # declarations is also part of the equality requirement as
+  # everything else would be too costly to implement.
+  if x.k != y.k: return false
+  if x.k == JNull: return true
+  if x.b - x.a != y.b - y.a: return false
+  for i in 0 ..< x.b - x.a + 1:
+    if x.t[][x.a + i] != y.t[][i + y.a]: return false
+  return true
 
 proc parseJson(p: var JsonParser; buf: var seq[byte]) =
   ## Parses JSON from a JSON Parser `p`. We break the abstraction here
@@ -881,6 +895,13 @@ when isMainModule:
     arr.add x
     x["field"] = %"value"
     assert $arr == "[{}]"
+
+  block:
+    var x = newJObject()
+    x["field"] = %"value"
+    var arr = newJArray()
+    arr.add x
+    assert arr == %*[{"field":"value"}]
 
   block:
     var arr = newJArray()
