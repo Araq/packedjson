@@ -12,7 +12,22 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
-##[ **Note**: Aliasing of JSON objects does not work as in ``json.nim``.
+##[ **Note**: This library distinguishes between ``JsonTree`` and ``JsonNode``
+types. Only ``JsonTree`` can be mutated and accessors like ``[]`` return a
+``JsonNode`` which is merely an immutable view into a ``JsonTree``. This
+prevents most forms of unsupported aliasing operations like:
+
+.. code-block:: nim
+    var arr = newJArray()
+    arr.add newJObject()
+    var x = arr[0]
+    # Error: 'x' is of type JsonNode and cannot be mutated:
+    x["field"] = %"value"
+
+(You can use the ``copy`` operation to create an explicit copy that then
+can be mutated.)
+
+A ``JsonTree`` that is added to another ``JsonTree`` gets copied:
 
 .. code-block:: nim
     var x = newJObject()
@@ -21,16 +36,10 @@
     x["field"] = %"value"
     assert $arr == "[{}]"
 
-However, aliasing after creation affects the original:
-
-.. code-block:: nim
-    var arr = newJArray()
-    arr.add newJObject()
-    var x = arr[0]
-    x["field"] = %"value"
-    assert $arr == """[{"field":"value"}]"""
-
-This problem will be addressed in future versions of the module. ]##
+These semantics also imply that code like ``myobj["field"]["nested"] = %4``
+needs instead be written as ``myobj["field", "nested"] = %4`` so that the
+changes are end up in the tree.
+]##
 
 import parsejson, parseutils, streams, strutils, macros
 from unicode import toUTF8, Rune
@@ -99,6 +108,10 @@ type
     a, b: int
     t: ref seq[byte]
 
+  JsonTree* = distinct JsonNode ## a JsonTree is a JsonNode that can be mutated.
+
+converter toJsonNode*(x: JsonTree): JsonNode {.inline.} = JsonNode(x)
+
 proc newJNull*(): JsonNode =
   ## Creates a new `JNull JsonNode`.
   result.k = JNull
@@ -131,21 +144,21 @@ proc newJBool*(b: bool): JsonNode =
   result.a = 0
   result.b = high(result.t[])
 
-proc newJObject*(): JsonNode =
+proc newJObject*(): JsonTree =
   ## Creates a new `JObject JsonNode`
-  result.k = JObject
-  new(result.t)
-  result.t[] = @[byte opcodeObject, byte opcodeEnd]
-  result.a = 0
-  result.b = high(result.t[])
+  JsonNode(result).k = JObject
+  new(JsonNode(result).t)
+  JsonNode(result).t[] = @[byte opcodeObject, byte opcodeEnd]
+  JsonNode(result).a = 0
+  JsonNode(result).b = high(JsonNode(result).t[])
 
-proc newJArray*(): JsonNode =
+proc newJArray*(): JsonTree =
   ## Creates a new `JArray JsonNode`
-  result.k = JArray
-  new(result.t)
-  result.t[] = @[byte opcodeArray, byte opcodeEnd]
-  result.a = 0
-  result.b = high(result.t[])
+  JsonNode(result).k = JArray
+  new(JsonNode(result).t)
+  JsonNode(result).t[] = @[byte opcodeArray, byte opcodeEnd]
+  JsonNode(result).a = 0
+  JsonNode(result).b = high(JsonNode(result).t[])
 
 proc kind*(x: JsonNode): JsonNodeKind = x.k
 
@@ -318,50 +331,63 @@ proc rawAddWithNull(parent: var JsonNode; child: JsonNode) =
   else:
     rawAdd(parent, child.t[], child.a, child.b)
 
-proc add*(parent: var JsonNode; child: JsonNode) =
+proc add*(parent: var JsonTree; child: JsonNode) =
   doAssert parent.kind == JArray, "parent is not a JArray"
-  rawAddWithNull(parent, child)
+  rawAddWithNull(JsonNode(parent), child)
 
-proc add*(obj: var JsonNode, key: string, val: JsonNode) =
+proc add*(obj: var JsonTree, key: string, val: JsonNode) =
   ## Sets a field from a `JObject`. **Warning**: It is currently not checked
   ## but assumed that the object does not yet have a field named `key`.
   assert obj.kind == JObject
   let k = newJstring(key)
   # XXX optimize this further!
-  rawAdd(obj, k.t[], 0, high(k.t[]))
-  rawAddWithNull(obj, val)
+  rawAdd(JsonNode obj, k.t[], 0, high(k.t[]))
+  rawAddWithNull(JsonNode obj, val)
   when false:
     discard "XXX assert that the key does not exist yet"
 
-proc `[]=`*(obj: var JsonNode, key: string, val: JsonNode) =
+proc rawPut(obj: var JsonNode, oldval: JsonNode, key: string, val: JsonNode): int =
+  let oldlen = oldval.b - oldval.a + 1
+  let newlen = val.b - val.a + 1
+  result = newlen - oldlen
+  if result == 0:
+    for i in 0 ..< newlen:
+      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+  else:
+    let oldfull = obj.t[].len
+    if newlen > oldlen:
+      setLen(obj.t[], oldfull+result)
+      # now move the tail to the new end so that we can insert effectively
+      # into the middle:
+      for i in countdown(oldfull+result-1, oldval.a+newlen): shallowCopy(obj.t[][i], obj.t[][i-result])
+    else:
+      for i in countup(oldval.a+newlen, oldfull+result-1): shallowCopy(obj.t[][i], obj.t[][i-result])
+      # cut down:
+      setLen(obj.t[], oldfull+result)
+    # overwrite old value:
+    for i in 0 ..< newlen:
+      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+
+proc `[]=`*(obj: var JsonTree, key: string, val: JsonNode) =
   let oldval = rawGet(obj, key)
   if oldval.a < 0:
     add(obj, key, val)
   else:
-    let oldlen = oldval.b - oldval.a + 1
-    let newlen = val.b - val.a + 1
-    if oldlen == newlen:
-      for i in 0 ..< newlen:
-        obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
-    else:
-      let diff = newlen - oldlen
-      let oldfull = obj.t[].len
-      if newlen > oldlen:
-        setLen(obj.t[], oldfull+diff)
-        # now move the tail to the new end so that we can insert effectively
-        # into the middle:
-        for i in countdown(oldfull+diff-1, oldval.a+newlen): shallowCopy(obj.t[][i], obj.t[][i-diff])
-      else:
-        for i in countup(oldval.a+newlen, oldfull+diff-1): shallowCopy(obj.t[][i], obj.t[][i-diff])
-        # cut down:
-        setLen(obj.t[], oldfull+diff)
-      # overwrite old value:
-      for i in 0 ..< newlen:
-        obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
-      inc obj.b, diff
+    let diff = rawPut(JsonNode obj, oldval, key, val)
+    inc JsonNode(obj).b, diff
 
-proc delete*(x: var JsonNode, key: string) =
-  ## Deletes ``x[key]``.
+proc `[]=`*(obj: var JsonTree, keys: varargs[string], val: JsonNode) =
+  var oldval = rawGet(obj, keys[0])
+  if oldval.a < 0:
+    raise newException(KeyError, "key not found in object: " & keys[0])
+  for i in 1..high(keys):
+    oldval = rawGet(oldval, keys[i])
+    if oldval.a < 0:
+      raise newException(KeyError, "key not found in object: " & keys[i])
+  let diff = rawPut(JsonNode obj, oldval, keys[high(keys)], val)
+  inc JsonNode(obj).b, diff
+
+proc rawDelete(x: var JsonNode, key: string) =
   assert x.kind == JObject
   var pos = x.a+1
   var dummy: int
@@ -404,6 +430,10 @@ proc delete*(x: var JsonNode, key: string) =
   # here. Not sure it's good idea.
   raise newException(KeyError, "key not in object: " & key)
 
+proc delete*(x: var JsonTree, key: string) =
+  ## Deletes ``x[key]``.
+  rawDelete(JsonNode x, key)
+
 proc `%`*(s: string): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
   newJString(s)
@@ -422,23 +452,23 @@ proc `%`*(b: bool): JsonNode =
 
 template `%`*(j: JsonNode): JsonNode = j
 
-proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonNode =
+proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
   if keyvals.len == 0: return newJArray()
   result = newJObject()
   for key, val in items(keyVals): result.add key, val
 
-proc `%`*[T](elements: openArray[T]): JsonNode =
+proc `%`*[T](elements: openArray[T]): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JArray JsonNode`
   result = newJArray()
   for elem in elements: result.add(%elem)
 
-proc `%`*(o: object): JsonNode =
+proc `%`*(o: object): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
   result = newJObject()
   for k, v in o.fieldPairs: result[k] = %v
 
-proc `%`*(o: ref object): JsonNode =
+proc `%`*(o: ref object): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
   if o.isNil:
     result = newJNull()
@@ -481,14 +511,14 @@ macro `%*`*(x: untyped): untyped =
   ## `%` for every element.
   result = toJson(x)
 
-proc copy*(n: JsonNode): JsonNode =
+proc copy*(n: JsonNode): JsonTree =
   ## Performs a deep copy of `a`.
-  result.k = n.k
-  result.a = n.a
-  result.b = n.b
+  JsonNode(result).k = n.k
+  JsonNode(result).a = n.a
+  JsonNode(result).b = n.b
   if n.t != nil:
-    new(result.t)
-    result.t[] = n.t[]
+    new(JsonNode(result).t)
+    JsonNode(result).t[] = n.t[]
 
 proc getStr*(n: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString JsonNode`.
@@ -730,7 +760,7 @@ proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
         dec i
       return newJNull()
 
-proc `{}=`*(node: var JsonNode, keys: varargs[string], value: JsonNode) =
+proc `{}=`*(node: var JsonTree, keys: varargs[string], value: JsonNode) =
   ## Traverses the node and tries to set the value at the given location
   ## to ``value``. If any of the keys are missing, they are added.
   if keys.len == 1:
@@ -809,30 +839,30 @@ proc parseJson(p: var JsonParser; buf: var seq[byte]) =
   of tkError, tkCurlyRi, tkBracketRi, tkColon, tkComma, tkEof:
     raiseParseErr(p, "{")
 
-proc parseJson*(s: Stream, filename: string = ""): JsonNode =
+proc parseJson*(s: Stream, filename: string = ""): JsonTree =
   ## Parses from a stream `s` into a `JsonNode`. `filename` is only needed
   ## for nice error messages.
   ## If `s` contains extra data, it will raise `JsonParsingError`.
   var p: JsonParser
   p.open(s, filename)
-  new result.t
-  result.t[] = newSeqOfCap[byte](64)
+  new JsonNode(result).t
+  JsonNode(result).t[] = newSeqOfCap[byte](64)
   try:
     discard getTok(p) # read first token
-    p.parseJson(result.t[])
-    result.a = 0
-    result.b = high(result.t[])
-    result.k = JsonNodeKind(result.t[][0] and opcodeMask)
+    p.parseJson(JsonNode(result).t[])
+    JsonNode(result).a = 0
+    JsonNode(result).b = high(JsonNode(result).t[])
+    JsonNode(result).k = JsonNodeKind(JsonNode(result).t[][0] and opcodeMask)
     eat(p, tkEof) # check if there is no extra data
   finally:
     p.close()
 
-proc parseJson*(buffer: string): JsonNode =
+proc parseJson*(buffer: string): JsonTree =
   ## Parses JSON from `buffer`.
   ## If `buffer` contains extra data, it will raise `JsonParsingError`.
   result = parseJson(newStringStream(buffer), "input")
 
-proc parseFile*(filename: string): JsonNode =
+proc parseFile*(filename: string): JsonTree =
   ## Parses `file` into a `JsonNode`.
   ## If `file` contains extra data, it will raise `JsonParsingError`.
   var stream = newFileStream(filename, fmRead)
@@ -878,16 +908,23 @@ when isMainModule:
 
   test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
 
-  # now let's test aliasing works:
   moreStuff["alias"] = newJObject()
-  var aa = moreStuff["alias"]
+  when false:
+    # now let's test aliasing works:
+    var aa = moreStuff["alias"]
 
-  aa["a"] = %1
-  aa["b"] = %3
+    aa["a"] = %1
+    aa["b"] = %3
 
-  delete moreStuff, "keyOne"
-  test $moreStuff, """{"abc":3,"null":678,"alias":{"a":1,"b":3}}"""
-  #moreStuff["keyOne"] = %*{"abc": 3, "more": 6.6, "null": nil}
+  when true:
+    delete moreStuff, "keyOne"
+    test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
+  moreStuff["keyOne"] = %*{"keyTwo": 3} #, "more": 6.6, "null": nil}
+  #echo moreStuff
+
+  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  moreStuff["keyOne", "keyTwo"] = %"ZZZZZ"
+  #echo moreStuff
 
   block:
     var x = newJObject()
@@ -903,7 +940,7 @@ when isMainModule:
     arr.add x
     assert arr == %*[{"field":"value"}]
 
-  block:
+  when false:
     var arr = newJArray()
     arr.add newJObject()
     var x = arr[0]
