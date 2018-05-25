@@ -490,11 +490,13 @@ proc toJson(x: NimNode): NimNode {.compiletime.} =
     result = newCall(bindSym"%", result)
   of nnkTableConstr: # object
     if x.len == 0: return newCall(bindSym"newJObject")
-    result = newNimNode(nnkTableConstr)
+    result = newNimNode(nnkStmtListExpr)
+    var res = gensym(nskVar, "cons")
+    result.add newVarStmt(res, newCall(bindSym"newJObject"))
     for i in 0 ..< x.len:
       x[i].expectKind nnkExprColonExpr
-      result.add newTree(nnkExprColonExpr, x[i][0], toJson(x[i][1]))
-    result = newCall(bindSym"%", result)
+      result.add newCall(bindSym"[]=", res, x[i][0], toJson(x[i][1]))
+    result.add res
   of nnkCurly: # empty object
     x.expectLen(0)
     result = newCall(bindSym"newJObject")
