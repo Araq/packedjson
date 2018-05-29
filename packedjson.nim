@@ -376,16 +376,35 @@ proc `[]=`*(obj: var JsonTree, key: string, val: JsonNode) =
     let diff = rawPut(JsonNode obj, oldval, key, val)
     inc JsonNode(obj).b, diff
 
-proc `[]=`*(obj: var JsonTree, keys: varargs[string], val: JsonNode) =
-  var oldval = rawGet(obj, keys[0])
-  if oldval.a < 0:
-    raise newException(KeyError, "key not found in object: " & keys[0])
-  for i in 1..high(keys):
-    oldval = rawGet(oldval, keys[i])
+macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
+  ## keys can be strings or integers for the navigation.
+  result = newStmtList()
+  template t0(obj, key) {.dirty.} =
+    var oldval = obj[key]
+
+  template ti(key) {.dirty.} =
+    oldval = oldval[key]
+
+  template tput(obj, finalkey, val) {.dirty.} =
+    let diff = rawPut(JsonNode obj, oldval, finalkey, val)
+    inc JsonNode(obj).b, diff
+
+  result.add getAst(t0(obj, keys[0]))
+  for i in 1..<len(keys):
+    result.add getAst(ti(keys[i]))
+  result.add getAst(tput(obj, keys[len(keys)-1], val))
+
+  when false:
+    var oldval = rawGet(obj, keys[0])
     if oldval.a < 0:
-      raise newException(KeyError, "key not found in object: " & keys[i])
-  let diff = rawPut(JsonNode obj, oldval, keys[high(keys)], val)
-  inc JsonNode(obj).b, diff
+      raise newException(KeyError, "key not found in object: " & keys[0])
+    for i in 1..high(keys):
+      oldval = rawGet(oldval, keys[i])
+      if oldval.a < 0:
+        raise newException(KeyError, "key not found in object: " & keys[i])
+
+    let diff = rawPut(JsonNode obj, oldval, keys[high(keys)], val)
+    inc JsonNode(obj).b, diff
 
 proc rawDelete(x: var JsonNode, key: string) =
   assert x.kind == JObject
@@ -948,3 +967,8 @@ when isMainModule:
     var x = arr[0]
     x["field"] = %"value"
     assert $arr == """[{"field":"value"}]"""
+
+  block:
+    var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
+    testJson["a", 2, "key"] = %10
+    test $testJson, """{"a":[1,2,{"key":10},4]}"""
