@@ -385,7 +385,7 @@ macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
   template ti(key) {.dirty.} =
     oldval = oldval[key]
 
-  template tput(obj, finalkey, val) {.dirty.} =
+  template tput(obj, finalkey, val) =
     let diff = rawPut(JsonNode obj, oldval, finalkey, val)
     inc JsonNode(obj).b, diff
 
