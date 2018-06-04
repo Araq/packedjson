@@ -22,6 +22,4 @@ packed json:  used Mem: 94.06MiB time: 2.622s
 stdlib json:  used Mem: 1.277GiB time: 3.759s
 ```
 
-# Todo
-
-- Tests, tests, tests!
+packedjson is now being used in production and seems to be reasonably stable.
