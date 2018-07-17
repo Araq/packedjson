@@ -393,6 +393,7 @@ macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
   for i in 1..<len(keys):
     result.add getAst(ti(keys[i]))
   result.add getAst(tput(obj, keys[len(keys)-1], val))
+  result = newBlockStmt(result)
 
   when false:
     var oldval = rawGet(obj, keys[0])
@@ -972,3 +973,9 @@ when isMainModule:
     var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
     testJson["a", 2, "key"] = %10
     test $testJson, """{"a":[1,2,{"key":10},4]}"""
+
+  block:
+    var mjson = %*{"properties":{"subnet":"a","securitygroup":"b"}}
+    mjson["properties","subnet"] = %""
+    mjson["properties","securitygroup"] = %""
+    test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
