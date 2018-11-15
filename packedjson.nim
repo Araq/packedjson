@@ -554,13 +554,41 @@ proc getStr*(n: JsonNode, default: string = ""): string =
   for i in 0 ..< L:
     result[i] = char(n.t[start+i])
 
+proc myParseInt(s: seq[byte]; first, last: int): BiggestInt =
+  var i = first
+  var isNegative = false
+  if i < last:
+    case chr(s[i])
+    of '+': inc(i)
+    of '-':
+      isNegative = true
+      inc(i)
+    else: discard
+  if i <= last and chr(s[i]) in {'0'..'9'}:
+    var res = 0u64
+    while i <= last and chr(s[i]) in {'0'..'9'}:
+      let c = uint64(ord(s[i]) - ord('0'))
+      if res <= (0xFFFF_FFFF_FFFF_FFFFu64 - c) div 10:
+        res = res * 10u64 + c
+      inc(i)
+    if isNegative:
+      if res >= uint64(high(BiggestInt))+1:
+        result = low(BiggestInt)
+      else:
+        result = -BiggestInt(res)
+    else:
+      if res >= uint64(high(BiggestInt)):
+        result = high(BiggestInt)
+      else:
+        result = BiggestInt(res)
+
 proc getInt*(n: JsonNode, default: int = 0): int =
   ## Retrieves the int value of a `JInt JsonNode`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
   if n.kind != JInt: return default
   let (start, L) = extractSlice(n.t[], n.a)
-  doAssert parseInt(cast[string](n.t[]), result, start) == L
+  result = int(myParseInt(n.t[], start, start + L - 1))
 
 proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
   ## Retrieves the BiggestInt value of a `JInt JsonNode`.
@@ -568,7 +596,7 @@ proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
   ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
   if n.kind != JInt: return default
   let (start, L) = extractSlice(n.t[], n.a)
-  doAssert parseBiggestInt(cast[string](n.t[]), result, start) == L
+  result = myParseInt(n.t[], start, start + L - 1)
 
 proc getFloat*(n: JsonNode, default: float = 0.0): float =
   ## Retrieves the float value of a `JFloat JsonNode`.
@@ -577,7 +605,13 @@ proc getFloat*(n: JsonNode, default: float = 0.0): float =
   case n.kind
   of JFloat, JInt:
     let (start, L) = extractSlice(n.t[], n.a)
-    doAssert parseFloat(cast[string](n.t[]), result, start) == L
+    if parseFloat(cast[string](n.t[]), result, start) != L:
+      # little hack ahead: If parsing failed because of following control bytes,
+      # patch the control byte, do the parsing and patch the control byte back:
+      let old = n.t[][start+L]
+      n.t[][start+L] = 0
+      doAssert parseFloat(cast[string](n.t[]), result, start) == L
+      n.t[][start+L] = old
   else:
     result = default
 
@@ -979,3 +1013,20 @@ when isMainModule:
     mjson["properties","subnet"] = %""
     mjson["properties","securitygroup"] = %""
     test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
+
+  block:
+    # bug #1
+    var msg = %*{
+      "itemId":25,
+      "cityId":15,
+      "less": low(BiggestInt),
+      "more": high(BiggestInt),
+      "million": 1_000_000
+    }
+    var itemId = msg["itemId"].getInt
+    var cityId = msg["cityId"].getInt
+    assert itemId == 25
+    assert cityId == 15
+    doAssert msg["less"].getBiggestInt == low(BiggestInt)
+    doAssert msg["more"].getBiggestInt == high(BiggestInt)
+    doAssert msg["million"].getBiggestInt == 1_000_000
