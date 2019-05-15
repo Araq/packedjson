@@ -12,22 +12,7 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
-##[ **Note**: This library distinguishes between ``JsonTree`` and ``JsonNode``
-types. Only ``JsonTree`` can be mutated and accessors like ``[]`` return a
-``JsonNode`` which is merely an immutable view into a ``JsonTree``. This
-prevents most forms of unsupported aliasing operations like:
-
-.. code-block:: nim
-    var arr = newJArray()
-    arr.add newJObject()
-    var x = arr[0]
-    # Error: 'x' is of type JsonNode and cannot be mutated:
-    x["field"] = %"value"
-
-(You can use the ``copy`` operation to create an explicit copy that then
-can be mutated.)
-
-A ``JsonTree`` that is added to another ``JsonTree`` gets copied:
+#[A ``JsonNode`` that is added to another ``JsonNode`` gets copied:
 
 .. code-block:: nim
     var x = newJObject()
@@ -94,7 +79,7 @@ proc storeAtom(buf: var seq[byte]; k: JsonNodeKind; data: string) =
     buf.setLen start + maxVarIntLen
     let realVlen = writeVu64(toOpenArray(buf, start, start + maxVarIntLen - 1), uint64 data.len)
     buf.setLen start + realVlen
-  for i in 0..high(data):
+  for i in 0..data.high:
     buf.add byte(data[i])
 
 proc beginContainer(buf: var seq[byte]; k: JsonNodeKind) =
@@ -103,84 +88,150 @@ proc beginContainer(buf: var seq[byte]; k: JsonNodeKind) =
 proc endContainer(buf: var seq[byte]) = buf.add byte(opcodeEnd)
 
 type
-  JsonNode* = object
-    k: JsonNodeKind
-    a, b: int
-    t: ref seq[byte]
+  JsonNode* = ref object
+    k*: JsonNodeKind
+    a*, b*: int
+    t*: ref seq[byte]
 
-  JsonTree* = distinct JsonNode ## a JsonTree is a JsonNode that can be mutated.
-
-converter toJsonNode*(x: JsonTree): JsonNode {.inline.} = JsonNode(x)
+proc kind*(x: JsonNode): JsonNodeKind = x.k
 
 proc newJNull*(): JsonNode =
-  ## Creates a new `JNull JsonNode`.
+  new result
   result.k = JNull
 
 template newBody(kind, x) =
-  new(result.t)
-  result.t[] = @[]
+  new result
+  new result.t
   storeAtom(result.t[], kind, x)
   result.a = 0
   result.b = high(result.t[])
   result.k = kind
 
 proc newJString*(s: string): JsonNode =
-  ## Creates a new `JString JsonNode`.
   newBody JString, s
 
 proc newJInt*(n: BiggestInt): JsonNode =
-  ## Creates a new `JInt JsonNode`.
   newBody JInt, $n
 
 proc newJFloat*(n: float): JsonNode =
-  ## Creates a new `JFloat JsonNode`.
   newBody JFloat, formatFloat(n)
 
 proc newJBool*(b: bool): JsonNode =
-  ## Creates a new `JBool JsonNode`.
+  new result
+  new result.t
   result.k = JBool
-  new(result.t)
   result.t[] = @[if b: byte(opcodeTrue) else: byte(opcodeFalse)]
   result.a = 0
-  result.b = high(result.t[])
+  result.b = result.t[].high
 
-proc newJObject*(): JsonTree =
-  ## Creates a new `JObject JsonNode`
-  JsonNode(result).k = JObject
-  new(JsonNode(result).t)
-  JsonNode(result).t[] = @[byte opcodeObject, byte opcodeEnd]
-  JsonNode(result).a = 0
-  JsonNode(result).b = high(JsonNode(result).t[])
+proc newJObject*(): JsonNode =
+  new result
+  new result.t
+  result.k = JObject
+  result.t[] = @[byte opcodeObject, opcodeEnd]
+  result.a = 0
+  result.b = result.t[].high
 
-proc newJArray*(): JsonTree =
-  ## Creates a new `JArray JsonNode`
-  JsonNode(result).k = JArray
-  new(JsonNode(result).t)
-  JsonNode(result).t[] = @[byte opcodeArray, byte opcodeEnd]
-  JsonNode(result).a = 0
-  JsonNode(result).b = high(JsonNode(result).t[])
+proc newJArray*(): JsonNode =
+  new result
+  new result.t
+  result.k = JArray
+  result.t[] = @[byte opcodeArray, byte opcodeEnd]
+  result.a = 0
+  result.b = result.t[].high
 
-proc kind*(x: JsonNode): JsonNodeKind = x.k
 
-proc extractLen(x: seq[byte]; pos: int): int =
-  if (x[pos] and 0b1111_1000u8) != 0b1111_1000u8:
-    result = int(x[pos]) shr 3
+
+proc `%`*[T](elements: openArray[T]): JsonNode =
+  result = newJArray()
+  for elem in elements: result.add(%elem)
+
+proc `%`*(o: object): JsonNode =
+  result = newJObject()
+  for k, v in o.fieldPairs: result[k] = %v
+
+proc `%`*(o: ref object): JsonNode =
+  if o.isNil:
+    result = newJNull()
   else:
-    # we had an overflow for inline length information,
-    # so extract the variable sized integer:
-    var varint: uint64
-    let varintLen = readVu64(toOpenArray(x, pos+1, min(pos + 1 + maxVarIntLen, x.high)), varint)
-    result = int(varint) + varintLen
+    result = %(o[])
 
-proc extractSlice(x: seq[byte]; pos: int): (int, int) =
+proc `%`*(o: enum): JsonNode =
+  result = %($o)
+proc `%`*(s: string): JsonNode =
+  newJString(s)
+
+proc `%`*(n: BiggestInt): JsonNode =
+  newJInt(n)
+
+proc `%`*(n: float): JsonNode =
+  result = newJFloat(n)
+
+proc `%`*(b: bool): JsonNode =
+  result = newJBool(b)
+
+template `%`*(j: JsonNode): JsonNode = j
+
+proc rawPut*(obj: JsonNode, oldval: JsonNode, key: string, val: JsonNode): int =
+  let oldlen = oldval.b - oldval.a + 1
+  let newlen = val.b - val.a + 1
+  result = newlen - oldlen
+  if result == 0:
+    for i in 0 ..< newlen:
+      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+  else:
+    let oldfull = obj.t[].len
+    if newlen > oldlen:
+      setLen(obj.t[], oldfull+result)
+      for i in countdown(oldfull+result-1, oldval.a+newlen): 
+        shallowCopy(obj.t[][i], obj.t[][i-result])
+    else:
+      for i in countup(oldval.a+newlen, oldfull+result-1): 
+        shallowCopy(obj.t[][i], obj.t[][i-result])
+      setLen(obj.t[], oldfull+result)
+    for i in 0 ..< newlen:
+      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+
+proc rawAdd*(obj: JsonNode; child: seq[byte]; a, b: int) =
+  let pa = obj.b
+  let L = b - a + 1
+  let oldfull = obj.t[].len
+  setLen(obj.t[], oldfull+L)
+  for i in countdown(oldfull+L-1, pa+L):
+    shallowCopy(obj.t[][i], obj.t[][i-L])
+  copyMem( obj.t[][pa].addr, child[a].unsafeAddr, L)
+  inc obj.b, L
+
+proc rawAddWithNull*(parent: JsonNode; child: JsonNode) =
+  if child.k == JNull:
+    let pa = parent.b
+    let oldLen = parent.t[].len
+    setLen(parent.t[], oldLen + 1)
+    for i in pa .. oldLen-1:
+      parent.t[][1 + i] = parent.t[][i]
+    parent.t[][pa] = byte opcodeNull
+    inc parent.b, 1
+  else:
+    rawAdd(parent, child.t[], child.a, child.b)
+
+proc add*(parent:JsonNode; child: JsonNode) =
+  rawAddWithNull(parent, child)
+
+proc extractSlice*(x: seq[byte]; pos: int): (int, int) =
   if (x[pos] and 0b1111_1000u8) != 0b1111_1000u8:
     result = (pos + 1, int(x[pos]) shr 3)
   else:
-    # we had an overflow for inline length information,
-    # so extract the variable sized integer:
     var varint: uint64
     let varintLen = readVu64(toOpenArray(x, pos+1, min(pos + 1 + maxVarIntLen, x.high)), varint)
     result = (pos + 1 + varintLen, int(varint))
+
+proc extractLen*(x: seq[byte]; pos: int): int =
+  if (x[pos] and 0b1111_1000u8) != 0b1111_1000u8:
+    result = int(x[pos]) shr 3
+  else:
+    var varint: uint64
+    let varintLen = readVu64(toOpenArray(x, pos+1, min(pos + 1 + maxVarIntLen, x.high)), varint)
+    result = int(varint) + varintLen
 
 proc skip(x: seq[byte]; start: int; elements: var int): int =
   var nested = 0
@@ -204,13 +255,48 @@ proc skip(x: seq[byte]; start: int; elements: var int): int =
     else: discard
     pos = nextPos
 
+proc rawGet*(x: JsonNode; name: string): JsonNode =
+  var pos = x.a + 1
+  var dummy: int
+  while pos <= x.b:
+    let k2 = x.t[][pos] and opcodeMask
+    if k2 == opcodeEnd or k2 != opcodeString: break
+    let (start, L) = extractSlice(x.t[], pos)
+    var isMatch = name.len == L
+    if isMatch:
+      for i in 0 ..< L:
+        if name[i] != char(x.t[][start+i]):
+          isMatch = false
+          break
+    pos = start + L
+
+    let k = x.t[][pos] and opcodeMask
+    var nextPos = pos + 1
+    case k
+    of opcodeNull, opcodeBool: discard
+    of opcodeInt, opcodeFloat, opcodeString:
+      let L = extractLen(x.t[], pos)
+      nextPos = pos + 1 + L
+    of opcodeObject, opcodeArray:
+      nextPos = skip(x.t[], pos+1, dummy)
+    of opcodeEnd: return newJNull()
+    else: discard
+    if isMatch:
+      return JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
+    pos = nextPos
+  new result
+  new result.t
+  result.a = -1
+
+proc `[]`*(x: JsonNode; name: string): JsonNode =
+  rawGet(x, name)
+
 iterator items*(x: JsonNode): JsonNode =
-  ## Iterator for the items of `x`. `x` has to be a JArray.
-  assert x.kind == JArray
+  if x.kind != JArray: discard
   var pos = x.a+1
   var dummy: int
   while pos <= x.b:
-    let k = x.t[pos] and opcodeMask
+    let k = x.t[][pos] and opcodeMask
     var nextPos = pos + 1
     case k
     of opcodeNull, opcodeBool: discard
@@ -225,22 +311,20 @@ iterator items*(x: JsonNode): JsonNode =
     pos = nextPos
 
 iterator pairs*(x: JsonNode): (string, JsonNode) =
-  ## Iterator for the pairs of `x`. `x` has to be a JObject.
-  assert x.kind == JObject
+  if x.kind != JObject: discard
   var pos = x.a+1
   var dummy: int
-  var key = newStringOfCap(60)
+  var key: string
   while pos <= x.b:
-    let k2 = x.t[pos] and opcodeMask
-    if k2 == opcodeEnd: break
-
-    assert k2 == opcodeString, $k2
+    let k2 = x.t[][pos] and opcodeMask
+    if k2 == opcodeEnd or k2 != opcodeString: break
     let (start, L) = extractSlice(x.t[], pos)
     key.setLen L
-    for i in 0 ..< L: key[i] = char(x.t[start+i])
+    for i in 0 ..< L: 
+      key[i] = char(x.t[][start+i])
     pos = start + L
 
-    let k = x.t[pos] and opcodeMask
+    let k = x.t[][pos] and opcodeMask
     var nextPos = pos + 1
     case k
     of opcodeNull, opcodeBool: discard
@@ -254,129 +338,162 @@ iterator pairs*(x: JsonNode): (string, JsonNode) =
     yield (key, JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t))
     pos = nextPos
 
-proc rawGet(x: JsonNode; name: string): JsonNode =
-  assert x.kind == JObject
-  var pos = x.a+1
-  var dummy: int
-  while pos <= x.b:
-    let k2 = x.t[pos] and opcodeMask
-    if k2 == opcodeEnd: break
+template escape(result, c) =
+  case c
+  of '\L': result.add("\\n")
+  of '\b': result.add("\\b")
+  of '\f': result.add("\\f")
+  of '\t': result.add("\\t")
+  of '\r': result.add("\\r")
+  of '"': result.add("\\\"")
+  of '\\': result.add("\\\\")
+  else: result.add(c)
 
-    assert k2 == opcodeString, $k2
-    let (start, L) = extractSlice(x.t[], pos)
-    # compare for the key without creating the temp string:
-    var isMatch = name.len == L
-    if isMatch:
-      for i in 0 ..< L:
-        if name[i] != char(x.t[start+i]):
-          isMatch = false
-          break
-    pos = start + L
+proc escapeJson*(s: string; result: var string) =
+  result.add("\"")
+  for c in s: escape(result, c)
+  result.add("\"")
 
-    let k = x.t[pos] and opcodeMask
-    var nextPos = pos + 1
-    case k
-    of opcodeNull, opcodeBool: discard
-    of opcodeInt, opcodeFloat, opcodeString:
-      let L = extractLen(x.t[], pos)
-      nextPos = pos + 1 + L
-    of opcodeObject, opcodeArray:
-      nextPos = skip(x.t[], pos+1, dummy)
-    of opcodeEnd: doAssert false, "unexpected end of object"
-    else: discard
-    if isMatch:
-      return JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t)
-    pos = nextPos
-  result.a = -1
+proc escapeJson*(s: string): string =
+  result = newStringOfCap(s.len + s.len shr 3)
+  escapeJson(s, result)
 
-proc `[]`*(x: JsonNode; name: string): JsonNode =
-  ## Gets a field from a `JObject`.
-  ## If the value at `name` does not exist, raises KeyError.
-  result = rawGet(x, name)
-  if result.a < 0:
-    raise newException(KeyError, "key not found in object: " & name)
+proc emitAtom(result: var string, n: JsonNode) =
+  let (start, L) = extractSlice(n.t[], n.a)
+  if n.k == JString: result.add("\"")
+  for i in 0 ..< L:
+    let c = char(n.t[][start+i])
+    escape(result, c)
+  if n.k == JString: result.add("\"")
+
+proc getBool*(n: JsonNode, default: bool = false): bool =
+  if n.kind == JBool: result = (n.t[][n.a] shr opcodeBits) == 1
+  else: result = default
+
+proc toUgly*(result: var string, node: JsonNode) =
+  var comma = false
+  case node.kind:
+  of JArray:
+    result.add "["
+    for child in node:
+      if comma: result.add ","
+      else: comma = true
+      result.toUgly child
+    result.add "]"
+  of JObject:
+    result.add "{"
+    for key, value in node.pairs:
+      if comma: result.add ","
+      else: comma = true
+      key.escapeJson(result)
+      result.add ":"
+      result.toUgly value
+    result.add "}"
+  of JString, JInt, JFloat:
+    emitAtom(result, node)
+  of JBool:
+    result.add(if node.getBool: "true" else: "false")
+  of JNull:
+    result.add "null"
+
+proc `$`*(node: JsonNode): string =
+  toUgly(result, node)
 
 proc len*(n: JsonNode): int =
-  ## If `n` is a `JArray`, it returns the number of elements.
-  ## If `n` is a `JObject`, it returns the number of pairs.
-  ## Else it returns 0.
   if n.k notin {JArray, JObject}: return 0
   discard skip(n.t[], n.a+1, result)
-  # divide by two because we counted the pairs wrongly:
   if n.k == JObject: result = result shr 1
 
-proc rawAdd(obj: var JsonNode; child: seq[byte]; a, b: int) =
-  let pa = obj.b
-  let L = b - a + 1
-  let oldfull = obj.t[].len
-  setLen(obj.t[], oldfull+L)
-  # now move the tail to the new end so that we can insert effectively
-  # into the middle:
-  for i in countdown(oldfull+L-1, pa+L):
-    shallowCopy(obj.t[][i], obj.t[][i-L])
-  # insert into the middle:
-  for i in 0 ..< L:
-    obj.t[][pa + i] = child[a + i]
-  inc obj.b, L
-
-proc rawAddWithNull(parent: var JsonNode; child: JsonNode) =
-  if child.k == JNull:
-    let pa = parent.b
-    let oldLen = parent.t[].len
-    setLen(parent.t[], oldLen + 1)
-    for i in pa .. oldLen-1:
-      parent.t[][1 + i] = parent.t[][i]
-    parent.t[][pa] = byte opcodeNull
-    inc parent.b, 1
-  else:
-    rawAdd(parent, child.t[], child.a, child.b)
-
-proc add*(parent: var JsonTree; child: JsonNode) =
-  doAssert parent.kind == JArray, "parent is not a JArray"
-  rawAddWithNull(JsonNode(parent), child)
-
-proc add*(obj: var JsonTree, key: string, val: JsonNode) =
+proc add*(obj: JsonNode, key: string, val: JsonNode) =
   ## Sets a field from a `JObject`. **Warning**: It is currently not checked
   ## but assumed that the object does not yet have a field named `key`.
-  assert obj.kind == JObject
+  if obj.kind != JObject: discard
   let k = newJstring(key)
-  # XXX optimize this further!
-  rawAdd(JsonNode obj, k.t[], 0, high(k.t[]))
-  rawAddWithNull(JsonNode obj, val)
+  var oldval = obj[key]
+  if oldval.len == 0:
+    rawAdd(obj, k.t[], k.a, k.b)
+    rawAddWithNull(obj, val)
+  else:
+    echo oldval
+    rawAdd(oldval, k.t[], k.a, k.b)
+    rawAddWithNull(oldval, val)
   when false:
     discard "XXX assert that the key does not exist yet"
 
-proc rawPut(obj: var JsonNode, oldval: JsonNode, key: string, val: JsonNode): int =
-  let oldlen = oldval.b - oldval.a + 1
-  let newlen = val.b - val.a + 1
-  result = newlen - oldlen
-  if result == 0:
-    for i in 0 ..< newlen:
-      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
-  else:
-    let oldfull = obj.t[].len
-    if newlen > oldlen:
-      setLen(obj.t[], oldfull+result)
-      # now move the tail to the new end so that we can insert effectively
-      # into the middle:
-      for i in countdown(oldfull+result-1, oldval.a+newlen): shallowCopy(obj.t[][i], obj.t[][i-result])
-    else:
-      for i in countup(oldval.a+newlen, oldfull+result-1): shallowCopy(obj.t[][i], obj.t[][i-result])
-      # cut down:
-      setLen(obj.t[], oldfull+result)
-    # overwrite old value:
-    for i in 0 ..< newlen:
-      obj.t[][oldval.a + i] = (if val.k == JNull: byte opcodeNull else: val.t[][i])
+proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonNode =
+  if keyvals.len == 0: return newJArray()
+  result = newJObject()
+  for key, val in items(keyVals): result.add key, val
 
-proc `[]=`*(obj: var JsonTree, key: string, val: JsonNode) =
-  let oldval = rawGet(obj, key)
+proc getFloat*(n: JsonNode, default: float = 0.0): float =
+  case n.kind
+  of JFloat, JInt:
+    let (start, L) = extractSlice(n.t[], n.a)
+    if parseFloat(cast[string](n.t[]), result, start) != L:
+      # little hack ahead: If parsing failed because of following control bytes,
+      # patch the control byte, do the parsing and patch the control byte back:
+      let old = n.t[][start+L]
+      n.t[][start+L] = 0
+      doAssert parseFloat(cast[string](n.t[]), result, start) == L
+      n.t[][start+L] = old
+  else:
+    result = default
+
+proc `+`*(a,b: JsonNode):JsonNode = 
+    %(a.getFloat + b.getFloat)
+
+proc contains*(node: JsonNode, key: string): bool =
+  if node.kind != JObject: return false
+  let x = rawGet(node, key)
+  result = x.a >= 0
+
+proc hasKey*(node: JsonNode, key: string): bool =
+  if node.kind != JObject: return false
+  let x = node[key]
+  result = x.a >= 0
+
+proc myParseInt(s: seq[byte]; first, last: int): BiggestInt =
+  var i = first
+  var isNegative = false
+  if i < last:
+    case chr(s[i])
+    of '+': inc(i)
+    of '-':
+      isNegative = true
+      inc(i)
+    else: discard
+  if i <= last and chr(s[i]) in {'0'..'9'}:
+    var res = 0u64
+    while i <= last and chr(s[i]) in {'0'..'9'}:
+      let c = uint64(ord(s[i]) - ord('0'))
+      if res <= (0xFFFF_FFFF_FFFF_FFFFu64 - c) div 10:
+        res = res * 10u64 + c
+      inc(i)
+    if isNegative:
+      if res >= uint64(high(BiggestInt))+1:
+        result = low(BiggestInt)
+      else:
+        result = -BiggestInt(res)
+    else:
+      if res >= uint64(high(BiggestInt)):
+        result = high(BiggestInt)
+      else:
+        result = BiggestInt(res)
+
+proc getInt*(n: JsonNode, default: int = 0): int =
+  if n.kind != JInt: return default
+  let (start, L) = extractSlice(n.t[], n.a)
+  result = int(myParseInt(n.t[], start, start + L - 1))
+
+proc `[]=`*(obj: JsonNode, key: string, val: JsonNode) =
+  let oldval = obj[key]
   if oldval.a < 0:
     add(obj, key, val)
   else:
-    let diff = rawPut(JsonNode obj, oldval, key, val)
-    inc JsonNode(obj).b, diff
+    let diff = rawPut(obj, oldval, key, val)
+    inc obj.b, diff
 
-macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
+macro `[]=`*(obj: JsonNode, keys: varargs[typed], val: JsonNode): untyped =
   ## keys can be strings or integers for the navigation.
   result = newStmtList()
   template t0(obj, key) {.dirty.} =
@@ -386,8 +503,8 @@ macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
     oldval = oldval[key]
 
   template tput(obj, finalkey, val) =
-    let diff = rawPut(JsonNode obj, oldval, finalkey, val)
-    inc JsonNode(obj).b, diff
+    let diff = rawPut(obj, oldval, finalkey, val)
+    inc obj.b, diff
 
   result.add getAst(t0(obj, keys[0]))
   for i in 1..<len(keys):
@@ -395,39 +512,24 @@ macro `[]=`*(obj: var JsonTree, keys: varargs[typed], val: JsonNode): untyped =
   result.add getAst(tput(obj, keys[len(keys)-1], val))
   result = newBlockStmt(result)
 
-  when false:
-    var oldval = rawGet(obj, keys[0])
-    if oldval.a < 0:
-      raise newException(KeyError, "key not found in object: " & keys[0])
-    for i in 1..high(keys):
-      oldval = rawGet(oldval, keys[i])
-      if oldval.a < 0:
-        raise newException(KeyError, "key not found in object: " & keys[i])
-
-    let diff = rawPut(JsonNode obj, oldval, keys[high(keys)], val)
-    inc JsonNode(obj).b, diff
-
-proc rawDelete(x: var JsonNode, key: string) =
-  assert x.kind == JObject
+proc rawDelete(x: JsonNode, key: string) =
   var pos = x.a+1
   var dummy: int
   while pos <= x.b:
-    let k2 = x.t[pos] and opcodeMask
-    if k2 == opcodeEnd: break
-
-    assert k2 == opcodeString, $k2
+    let k2 = x.t[][pos] and opcodeMask
+    if k2 == opcodeEnd or k2 != opcodeString: break
     let begin = pos
     let (start, L) = extractSlice(x.t[], pos)
     # compare for the key without creating the temp string:
     var isMatch = key.len == L
     if isMatch:
       for i in 0 ..< L:
-        if key[i] != char(x.t[start+i]):
+        if key[i] != char(x.t[][start+i]):
           isMatch = false
           break
     pos = start + L
 
-    let k = x.t[pos] and opcodeMask
+    let k = x.t[][pos] and opcodeMask
     var nextPos = pos + 1
     case k
     of opcodeNull, opcodeBool: discard
@@ -436,69 +538,20 @@ proc rawDelete(x: var JsonNode, key: string) =
       nextPos = pos + 1 + L
     of opcodeObject, opcodeArray:
       nextPos = skip(x.t[], pos+1, dummy)
-    of opcodeEnd: doAssert false, "unexpected end of object"
+    of opcodeEnd: discard
     else: discard
     if isMatch:
       let diff = nextPos - begin
       let oldfull = x.t[].len
-      for i in countup(begin, oldfull-diff-1): shallowCopy(x.t[][i], x.t[][i+diff])
+      for i in countup(begin, oldfull-diff-1): 
+        shallowCopy(x.t[][i], x.t[][i+diff])
       setLen(x.t[], oldfull-diff)
       dec x.b, diff
       return
     pos = nextPos
-  # for compatibility with json.nim, we need to raise an exception
-  # here. Not sure it's good idea.
-  raise newException(KeyError, "key not in object: " & key)
 
-proc delete*(x: var JsonTree, key: string) =
-  ## Deletes ``x[key]``.
-  rawDelete(JsonNode x, key)
-
-proc `%`*(s: string): JsonNode =
-  ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
-  newJString(s)
-
-proc `%`*(n: BiggestInt): JsonNode =
-  ## Generic constructor for JSON data. Creates a new `JInt JsonNode`.
-  newJInt(n)
-
-proc `%`*(n: float): JsonNode =
-  ## Generic constructor for JSON data. Creates a new `JFloat JsonNode`.
-  result = newJFloat(n)
-
-proc `%`*(b: bool): JsonNode =
-  ## Generic constructor for JSON data. Creates a new `JBool JsonNode`.
-  result = newJBool(b)
-
-template `%`*(j: JsonNode): JsonNode = j
-
-proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonTree =
-  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
-  if keyvals.len == 0: return newJArray()
-  result = newJObject()
-  for key, val in items(keyVals): result.add key, val
-
-proc `%`*[T](elements: openArray[T]): JsonTree =
-  ## Generic constructor for JSON data. Creates a new `JArray JsonNode`
-  result = newJArray()
-  for elem in elements: result.add(%elem)
-
-proc `%`*(o: object): JsonTree =
-  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
-  result = newJObject()
-  for k, v in o.fieldPairs: result[k] = %v
-
-proc `%`*(o: ref object): JsonTree =
-  ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
-  if o.isNil:
-    result = newJNull()
-  else:
-    result = %(o[])
-
-proc `%`*(o: enum): JsonNode =
-  ## Construct a JsonNode that represents the specified enum value as a
-  ## string. Creates a new ``JString JsonNode``.
-  result = %($o)
+proc delete*(x:JsonNode, key: string) =
+  rawDelete(x, key)
 
 proc toJson(x: NimNode): NimNode {.compiletime.} =
   case x.kind
@@ -533,121 +586,20 @@ macro `%*`*(x: untyped): untyped =
   ## `%` for every element.
   result = toJson(x)
 
-proc copy*(n: JsonNode): JsonTree =
-  ## Performs a deep copy of `a`.
-  JsonNode(result).k = n.k
-  JsonNode(result).a = n.a
-  JsonNode(result).b = n.b
-  if n.t != nil:
-    new(JsonNode(result).t)
-    JsonNode(result).t[] = n.t[]
-
 proc getStr*(n: JsonNode, default: string = ""): string =
-  ## Retrieves the string value of a `JString JsonNode`.
-  ##
-  ## Returns ``default`` if ``n`` is not a ``JString``.
   if n.kind != JString: return default
-
   let (start, L) = extractSlice(n.t[], n.a)
-  # XXX use copyMem here:
   result = newString(L)
-  for i in 0 ..< L:
-    result[i] = char(n.t[start+i])
-
-proc myParseInt(s: seq[byte]; first, last: int): BiggestInt =
-  var i = first
-  var isNegative = false
-  if i < last:
-    case chr(s[i])
-    of '+': inc(i)
-    of '-':
-      isNegative = true
-      inc(i)
-    else: discard
-  if i <= last and chr(s[i]) in {'0'..'9'}:
-    var res = 0u64
-    while i <= last and chr(s[i]) in {'0'..'9'}:
-      let c = uint64(ord(s[i]) - ord('0'))
-      if res <= (0xFFFF_FFFF_FFFF_FFFFu64 - c) div 10:
-        res = res * 10u64 + c
-      inc(i)
-    if isNegative:
-      if res >= uint64(high(BiggestInt))+1:
-        result = low(BiggestInt)
-      else:
-        result = -BiggestInt(res)
-    else:
-      if res >= uint64(high(BiggestInt)):
-        result = high(BiggestInt)
-      else:
-        result = BiggestInt(res)
-
-proc getInt*(n: JsonNode, default: int = 0): int =
-  ## Retrieves the int value of a `JInt JsonNode`.
-  ##
-  ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
-  if n.kind != JInt: return default
-  let (start, L) = extractSlice(n.t[], n.a)
-  result = int(myParseInt(n.t[], start, start + L - 1))
+  copyMem(result[0].addr, n.t[][start].addr, L)
 
 proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
-  ## Retrieves the BiggestInt value of a `JInt JsonNode`.
-  ##
-  ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
   if n.kind != JInt: return default
   let (start, L) = extractSlice(n.t[], n.a)
   result = myParseInt(n.t[], start, start + L - 1)
 
-proc getFloat*(n: JsonNode, default: float = 0.0): float =
-  ## Retrieves the float value of a `JFloat JsonNode`.
-  ##
-  ## Returns ``default`` if ``n`` is not a ``JFloat`` or ``JInt``, or if ``n`` is nil.
-  case n.kind
-  of JFloat, JInt:
-    let (start, L) = extractSlice(n.t[], n.a)
-    if parseFloat(cast[string](n.t[]), result, start) != L:
-      # little hack ahead: If parsing failed because of following control bytes,
-      # patch the control byte, do the parsing and patch the control byte back:
-      let old = n.t[][start+L]
-      n.t[][start+L] = 0
-      doAssert parseFloat(cast[string](n.t[]), result, start) == L
-      n.t[][start+L] = old
-  else:
-    result = default
-
-proc getBool*(n: JsonNode, default: bool = false): bool =
-  ## Retrieves the bool value of a `JBool JsonNode`.
-  ##
-  ## Returns ``default`` if ``n`` is not a ``JBool``, or if ``n`` is nil.
-  if n.kind == JBool: result = (n.t[n.a] shr opcodeBits) == 1
-  else: result = default
-
 proc isEmpty(n: JsonNode): bool =
   assert n.kind in {JArray, JObject}
-  result = n.t[n.a+1] == opcodeEnd
-
-template escape(result, c) =
-  case c
-  of '\L': result.add("\\n")
-  of '\b': result.add("\\b")
-  of '\f': result.add("\\f")
-  of '\t': result.add("\\t")
-  of '\r': result.add("\\r")
-  of '"': result.add("\\\"")
-  of '\\': result.add("\\\\")
-  else: result.add(c)
-
-proc escapeJson*(s: string; result: var string) =
-  ## Converts a string `s` to its JSON representation.
-  ## Appends to ``result``.
-  result.add("\"")
-  for c in s: escape(result, c)
-  result.add("\"")
-
-proc escapeJson*(s: string): string =
-  ## Converts a string `s` to its JSON representation.
-  result = newStringOfCap(s.len + s.len shr 3)
-  escapeJson(s, result)
+  result = n.t[][n.a+1] == opcodeEnd
 
 proc indent(s: var string, i: int) =
   for _ in 1..i: s.add ' '
@@ -658,14 +610,6 @@ proc newIndent(curr, indent: int, ml: bool): int =
 
 proc nl(s: var string, ml: bool) =
   s.add(if ml: '\L' else: ' ')
-
-proc emitAtom(result: var string, n: JsonNode) =
-  let (start, L) = extractSlice(n.t[], n.a)
-  if n.k == JString: result.add("\"")
-  for i in 0 ..< L:
-    let c = char(n.t[start+i])
-    escape(result, c)
-  if n.k == JString: result.add("\"")
 
 proc toPretty(result: var string, n: JsonNode, indent = 2, ml = true,
               lstArr = false, currIndent = 0) =
@@ -725,88 +669,21 @@ proc pretty*(node: JsonNode, indent = 2): string =
   result = ""
   toPretty(result, node, indent)
 
-proc toUgly*(result: var string, node: JsonNode) =
-  ## Converts `node` to its JSON Representation, without
-  ## regard for human readability. Meant to improve ``$`` string
-  ## conversion performance.
-  ##
-  ## JSON representation is stored in the passed `result`
-  ##
-  ## This provides higher efficiency than the ``pretty`` procedure as it
-  ## does **not** attempt to format the resulting JSON to make it human readable.
-  var comma = false
-  case node.kind:
-  of JArray:
-    result.add "["
-    for child in node:
-      if comma: result.add ","
-      else: comma = true
-      result.toUgly child
-    result.add "]"
-  of JObject:
-    result.add "{"
-    for key, value in pairs(node):
-      if comma: result.add ","
-      else: comma = true
-      key.escapeJson(result)
-      result.add ":"
-      result.toUgly value
-    result.add "}"
-  of JString, JInt, JFloat:
-    emitAtom(result, node)
-  of JBool:
-    result.add(if node.getBool: "true" else: "false")
-  of JNull:
-    result.add "null"
-
-proc `$`*(node: JsonNode): string =
-  ## Converts `node` to its JSON Representation on one line.
-  result = newStringOfCap(node.len shl 1)
-  toUgly(result, node)
-
 proc `[]`*(node: JsonNode, index: int): JsonNode =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
   ## is out of bounds, but as long as array bound checks are enabled it will
   ## result in an exception.
-  assert(node.kind == JArray)
+  if node.kind != JArray: discard
   var i = index
   for x in items(node):
     if i == 0: return x
     dec i
   raise newException(IndexError, "index out of bounds")
 
-proc contains*(node: JsonNode, key: string): bool =
-  ## Checks if `key` exists in `node`.
-  assert(node.kind == JObject)
-  let x = rawGet(node, key)
-  result = x.a >= 0
-
-proc hasKey*(node: JsonNode, key: string): bool =
-  ## Checks if `key` exists in `node`.
-  assert(node.kind == JObject)
-  result = node.contains(key)
-
-proc `{}`*(node: JsonNode, keys: varargs[string]): JsonNode =
-  ## Traverses the node and gets the given value. If any of the
-  ## keys do not exist, returns ``JNull``. Also returns ``JNull`` if one of the
-  ## intermediate data structures is not an object.
-  result = node
-  for kk in keys:
-    if result.kind != JObject: return newJNull()
-    block searchLoop:
-      for k, v in pairs(result):
-        if k == kk:
-          result = v
-          break searchLoop
-      return newJNull()
-
 proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
-  ## Traverses the node and gets the given value. If any of the
-  ## indexes do not exist, returns ``JNull``. Also returns ``JNull`` if one of the
-  ## intermediate data structures is not an array.
   result = node
   for j in indexes:
-    if result.kind != JArray: return newJNull()
+    if result.k != JArray: return newJArray()
     block searchLoop:
       var i = j
       for x in items(result):
@@ -814,24 +691,29 @@ proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
           result = x
           break searchLoop
         dec i
-      return newJNull()
+      return newJArray()
 
-proc `{}=`*(node: var JsonTree, keys: varargs[string], value: JsonNode) =
-  ## Traverses the node and tries to set the value at the given location
-  ## to ``value``. If any of the keys are missing, they are added.
-  if keys.len == 1:
-    node[keys[0]] = value
-  elif keys.len != 0:
-    var v = value
-    for i in countdown(keys.len-1, 1):
-      var x = newJObject()
-      x[keys[i]] = v
-      v = x
-    node[keys[0]] = v
+proc `{}`*(node: JsonNode, keys: varargs[string]): JsonNode =
+  result = node
+  for kk in keys:
+    if result.k != JObject: return newJObject()
+    block searchLoop:
+      for k, v in result.pairs:
+        if k == kk:
+          result = v
+          break searchLoop
+      return newJObject()
+
+proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
+  if not node.hasKey keys[0]:
+    if node.len != 0: 
+      node.t[].add opcodeNull
+      node.b = node.t[].high - 1
+    node[keys[0]] = newJObject()
+  for i in 1..keys.high:
+    node[keys[0]].add keys[i], value
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
-  ## Gets a field from a `node`. If `node` is nil or not an object or
-  ## value at `key` does not exist, returns JNull
   for k, v in pairs(node):
     if k == key: return v
   result = newJNull()
@@ -895,32 +777,24 @@ proc parseJson(p: var JsonParser; buf: var seq[byte]) =
   of tkError, tkCurlyRi, tkBracketRi, tkColon, tkComma, tkEof:
     raiseParseErr(p, "{")
 
-proc parseJson*(s: Stream, filename: string = ""): JsonTree =
-  ## Parses from a stream `s` into a `JsonNode`. `filename` is only needed
-  ## for nice error messages.
-  ## If `s` contains extra data, it will raise `JsonParsingError`.
+proc parseJson*(s: Stream, filename: string = ""): JsonNode =
   var p: JsonParser
   p.open(s, filename)
-  new JsonNode(result).t
-  JsonNode(result).t[] = newSeqOfCap[byte](64)
+  result.t[] = newSeqOfCap[byte](64)
   try:
     discard getTok(p) # read first token
-    p.parseJson(JsonNode(result).t[])
-    JsonNode(result).a = 0
-    JsonNode(result).b = high(JsonNode(result).t[])
-    JsonNode(result).k = JsonNodeKind(JsonNode(result).t[][0] and opcodeMask)
+    p.parseJson(result.t[])
+    result.a = 0
+    result.b = high(result.t[])
+    result.k = JsonNodeKind(result.t[][0] and opcodeMask)
     eat(p, tkEof) # check if there is no extra data
   finally:
     p.close()
 
-proc parseJson*(buffer: string): JsonTree =
-  ## Parses JSON from `buffer`.
-  ## If `buffer` contains extra data, it will raise `JsonParsingError`.
+proc parseJson*(buffer: string): JsonNode =
   result = parseJson(newStringStream(buffer), "input")
 
-proc parseFile*(filename: string): JsonTree =
-  ## Parses `file` into a `JsonNode`.
-  ## If `file` contains extra data, it will raise `JsonParsingError`.
+proc parseFile*(filename: string): JsonNode =
   var stream = newFileStream(filename, fmRead)
   if stream == nil:
     raise newException(IOError, "cannot read from file: " & filename)
@@ -935,98 +809,102 @@ when isMainModule:
     for i in 0 ..< L:
       result[i] = char(b[start+i])
     echo result
+  
+  var cost = newJObject()
+  var rows = [["AWS","compute"],["AWS","network"],["Alibaba","compute"],["Alibaba","network"]]
 
-  template test(a, b) =
-    let x = a
-    if x != b:
-      echo "test failed ", astToStr(a), ":"
-      echo x
-      echo b
+  for row in rows:
+      cost{row[0],row[1]} = %(cost{row[0],row[1]}.getFloat + 1.0)
+  echo cost
+  # template test(a, b) =
+  #   let x = a
+  #   if x != b:
+  #     echo "test failed ", astToStr(a), ":"
+  #     echo x
+  #     echo b
 
-  let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
-  test $testJson{"a"}[3], "4"
+  # let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
+  # test $testJson{"a"}[3], "4"
 
-  var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
-  test $moreStuff, """{"abc":3,"more":6.600000000000000,"null":null}"""
+  # var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
+  # test $moreStuff, """{"abc":3,"more":6.600000000000000,"null":null}"""
 
-  moreStuff["more"] = %"foo bar"
-  test $moreStuff, """{"abc":3,"more":"foo bar","null":null}"""
+  # moreStuff["more"] = %"foo bar"
+  # test $moreStuff, """{"abc":3,"more":"foo bar","null":null}"""
 
-  moreStuff["more"] = %"a"
-  moreStuff["null"] = %678
+  # moreStuff["more"] = %"a"
+  # moreStuff["null"] = %678
 
-  test $moreStuff, """{"abc":3,"more":"a","null":678}"""
+  # test $moreStuff, """{"abc":3,"more":"a","null":678}"""
 
-  moreStuff.delete "more"
-  test $moreStuff, """{"abc":3,"null":678}"""
+  # moreStuff.delete "more"
+  # test $moreStuff, """{"abc":3,"null":678}"""
 
-  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  # moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
 
-  test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
+  # test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
 
-  moreStuff["alias"] = newJObject()
-  when false:
-    # now let's test aliasing works:
-    var aa = moreStuff["alias"]
+  # moreStuff["alias"] = newJObject()
+  # when false:
+  #   # now let's test aliasing works:
+  #   var aa = moreStuff["alias"]
 
-    aa["a"] = %1
-    aa["b"] = %3
+  #   aa["a"] = %1
+  #   aa["b"] = %3
 
-  when true:
-    delete moreStuff, "keyOne"
-    test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
-  moreStuff["keyOne"] = %*{"keyTwo": 3} #, "more": 6.6, "null": nil}
-  #echo moreStuff
+  # when true:
+  #   delete moreStuff, "keyOne"
+  #   test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
+  # moreStuff["keyOne"] = %*{"keyTwo": 3}
 
-  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
-  moreStuff["keyOne", "keyTwo"] = %"ZZZZZ"
-  #echo moreStuff
+  # moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  # moreStuff["keyOne", "keyTwo"] = %"ZZZZZ"
 
-  block:
-    var x = newJObject()
-    var arr = newJArray()
-    arr.add x
-    x["field"] = %"value"
-    assert $arr == "[{}]"
+  # block:
+  #   var x = newJObject()
+  #   var arr = newJArray()
+  #   arr.add x
+  #   x["field"] = %"value"
+  #   assert $arr == "[{}]"
 
-  block:
-    var x = newJObject()
-    x["field"] = %"value"
-    var arr = newJArray()
-    arr.add x
-    assert arr == %*[{"field":"value"}]
+  # block:
+  #   var x = newJObject()
+  #   x["field"] = %"value"
+  #   var arr = newJArray()
+  #   arr.add x
+  #   assert arr == %*[{"field":"value"}]
 
-  when false:
-    var arr = newJArray()
-    arr.add newJObject()
-    var x = arr[0]
-    x["field"] = %"value"
-    assert $arr == """[{"field":"value"}]"""
+  # when false:
+  #   var arr = newJArray()
+  #   arr.add newJObject()
+  #   var x = arr[0]
+  #   x["field"] = %"value"
+  #   assert $arr == """[{"field":"value"}]"""
 
-  block:
-    var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
-    testJson["a", 2, "key"] = %10
-    test $testJson, """{"a":[1,2,{"key":10},4]}"""
+  # block:
+  #   var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
+  #   testJson["a", 2, "key"] = %10
+  #   test $testJson, """{"a":[1,2,{"key":10},4]}"""
 
-  block:
-    var mjson = %*{"properties":{"subnet":"a","securitygroup":"b"}}
-    mjson["properties","subnet"] = %""
-    mjson["properties","securitygroup"] = %""
-    test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
+  # block:
+  #   var mjson = %*{"properties":{"subnet":"a","securitygroup":"b"}}
+  #   mjson["properties","subnet"] = %""
+  #   mjson["properties","securitygroup"] = %""
+  #   test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
 
-  block:
-    # bug #1
-    var msg = %*{
-      "itemId":25,
-      "cityId":15,
-      "less": low(BiggestInt),
-      "more": high(BiggestInt),
-      "million": 1_000_000
-    }
-    var itemId = msg["itemId"].getInt
-    var cityId = msg["cityId"].getInt
-    assert itemId == 25
-    assert cityId == 15
-    doAssert msg["less"].getBiggestInt == low(BiggestInt)
-    doAssert msg["more"].getBiggestInt == high(BiggestInt)
-    doAssert msg["million"].getBiggestInt == 1_000_000
+  # block:
+  #   # bug #1
+  #   var msg = %*{
+  #     "itemId":25,
+  #     "cityId":15,
+  #     "less": low(BiggestInt),
+  #     "more": high(BiggestInt),
+  #     "million": 1_000_000
+  #   }
+  #   var itemId = msg["itemId"].getInt
+  #   var cityId = msg["cityId"].getInt
+  #   assert itemId == 25
+  #   assert cityId == 15
+  #   doAssert msg["less"].getBiggestInt == low(BiggestInt)
+  #   doAssert msg["more"].getBiggestInt == high(BiggestInt)
+  #   doAssert msg["million"].getBiggestInt == 1_000_000
