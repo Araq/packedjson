@@ -32,7 +32,7 @@ from unicode import toUTF8, Rune
 import std / varints
 
 type
-  JsonNodeKind* = enum ## possible JSON node types
+  JsonNodeKind* = enum 
     JNull,
     JBool,
     JInt,
@@ -63,7 +63,7 @@ const
   opcodeString = ord JString
   opcodeObject = ord JObject
   opcodeArray = ord JArray
-  opcodeEnd = 7
+  opcodeEnd* = 7
 
   opcodeMask = 0b111
 
@@ -89,8 +89,8 @@ proc endContainer(buf: var seq[byte]) = buf.add byte(opcodeEnd)
 
 type
   JsonNode* = ref object
-    k*: JsonNodeKind
-    a*, b*: int
+    k: JsonNodeKind
+    a, b*: int
     t*: ref seq[byte]
 
 proc kind*(x: JsonNode): JsonNodeKind = x.k
@@ -128,7 +128,7 @@ proc newJObject*(): JsonNode =
   new result
   new result.t
   result.k = JObject
-  result.t[] = @[byte opcodeObject, opcodeEnd]
+  result.t[] = @[byte opcodeObject,  opcodeEnd]
   result.a = 0
   result.b = result.t[].high
 
@@ -139,7 +139,6 @@ proc newJArray*(): JsonNode =
   result.t[] = @[byte opcodeArray, byte opcodeEnd]
   result.a = 0
   result.b = result.t[].high
-
 
 
 proc `%`*[T](elements: openArray[T]): JsonNode =
@@ -333,7 +332,7 @@ iterator pairs*(x: JsonNode): (string, JsonNode) =
       nextPos = pos + 1 + L
     of opcodeObject, opcodeArray:
       nextPos = skip(x.t[], pos+1, dummy)
-    of opcodeEnd: doAssert false, "unexpected end of object"
+    of opcodeEnd: break
     else: discard
     yield (key, JsonNode(k: JsonNodeKind(k), a: pos, b: nextPos-1, t: x.t))
     pos = nextPos
@@ -405,18 +404,10 @@ proc len*(n: JsonNode): int =
   if n.k == JObject: result = result shr 1
 
 proc add*(obj: JsonNode, key: string, val: JsonNode) =
-  ## Sets a field from a `JObject`. **Warning**: It is currently not checked
-  ## but assumed that the object does not yet have a field named `key`.
   if obj.kind != JObject: discard
   let k = newJstring(key)
-  var oldval = obj[key]
-  if oldval.len == 0:
-    rawAdd(obj, k.t[], k.a, k.b)
-    rawAddWithNull(obj, val)
-  else:
-    echo oldval
-    rawAdd(oldval, k.t[], k.a, k.b)
-    rawAddWithNull(oldval, val)
+  rawAdd(obj, k.t[], k.a, k.b)
+  rawAddWithNull(obj, val)
   when false:
     discard "XXX assert that the key does not exist yet"
 
@@ -520,7 +511,6 @@ proc rawDelete(x: JsonNode, key: string) =
     if k2 == opcodeEnd or k2 != opcodeString: break
     let begin = pos
     let (start, L) = extractSlice(x.t[], pos)
-    # compare for the key without creating the temp string:
     var isMatch = key.len == L
     if isMatch:
       for i in 0 ..< L:
@@ -549,6 +539,7 @@ proc rawDelete(x: JsonNode, key: string) =
       dec x.b, diff
       return
     pos = nextPos
+  raise newException(KeyError, "key not in object: " & key)
 
 proc delete*(x:JsonNode, key: string) =
   rawDelete(x, key)
@@ -590,6 +581,8 @@ proc getStr*(n: JsonNode, default: string = ""): string =
   if n.kind != JString: return default
   let (start, L) = extractSlice(n.t[], n.a)
   result = newString(L)
+  # for i in 0 ..< L:
+  #   result[i] = char(n.t[start+i])
   copyMem(result[0].addr, n.t[][start].addr, L)
 
 proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
@@ -705,13 +698,15 @@ proc `{}`*(node: JsonNode, keys: varargs[string]): JsonNode =
       return newJObject()
 
 proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
-  if not node.hasKey keys[0]:
-    if node.len != 0: 
-      node.t[].add opcodeNull
-      node.b = node.t[].high - 1
+  if keys[0] notin node:
     node[keys[0]] = newJObject()
   for i in 1..keys.high:
-    node[keys[0]].add keys[i], value
+      if i == keys.high:
+          node{keys[0..i-1]}[keys[i]] = value
+      else:
+          node.b = node.t[].high - 1
+          node{keys[0..i-1]}[keys[i]] = newJObject()
+  node.b = node.t[].high - 1
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
   for k, v in pairs(node):
@@ -780,6 +775,8 @@ proc parseJson(p: var JsonParser; buf: var seq[byte]) =
 proc parseJson*(s: Stream, filename: string = ""): JsonNode =
   var p: JsonParser
   p.open(s, filename)
+  new result
+  new result.t
   result.t[] = newSeqOfCap[byte](64)
   try:
     discard getTok(p) # read first token
@@ -801,110 +798,92 @@ proc parseFile*(filename: string): JsonNode =
   result = parseJson(stream, filename)
 
 when isMainModule:
-  when false:
-    var b: seq[byte] = @[]
-    storeAtom(b, JString, readFile("packedjson.nim"))
-    let (start, L) = extractSlice(b, 0)
-    var result = newString(L)
-    for i in 0 ..< L:
-      result[i] = char(b[start+i])
-    echo result
-  
   var cost = newJObject()
-  var rows = [["AWS","compute"],["AWS","network"],["Alibaba","compute"],["Alibaba","network"]]
+  cost.t[].add opcodeEnd
+  var rows = [["AWS","compute","monthly"],["AWS","network","monthly"],
+              ["Alibaba","compute","monthly"],["Alibaba","network","monthly"],
+              ["Tencent","compute","monthly"],["Tencent","network","monthly"]]
 
   for row in rows:
-      cost{row[0],row[1]} = %(cost{row[0],row[1]}.getFloat + 1.0)
+      cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
+  cost["AWS"].add "yearly",%1.0
   echo cost
-  # template test(a, b) =
-  #   let x = a
-  #   if x != b:
-  #     echo "test failed ", astToStr(a), ":"
-  #     echo x
-  #     echo b
+  echo cost["AWS"]["compute"]["monthly"].getFloat
+  echo cost["AWS"]["yearly"].getFloat
+  template test(a, b) =
+    let x = a
+    if x != b:
+      echo "test failed ", astToStr(a), ":"
+      echo "got:",x
+      echo "should be:",b
 
-  # let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
-  # test $testJson{"a"}[3], "4"
+  let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
+  test $testJson{"a"}[3], "4"
 
-  # var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
-  # test $moreStuff, """{"abc":3,"more":6.600000000000000,"null":null}"""
+  var moreStuff = %*{"abc": 3, "more": 6.6, "null": nil}
+  test $moreStuff, """{"abc":3,"more":6.600000000000000,"null":null}"""
+  
+  moreStuff["more"] = %"foo bar"
+  test $moreStuff, """{"abc":3,"more":"foo bar","null":null}"""
 
-  # moreStuff["more"] = %"foo bar"
-  # test $moreStuff, """{"abc":3,"more":"foo bar","null":null}"""
+  moreStuff["more"] = %"a"
+  moreStuff["null"] = %678
 
-  # moreStuff["more"] = %"a"
-  # moreStuff["null"] = %678
+  test $moreStuff, """{"abc":3,"more":"a","null":678}"""
 
-  # test $moreStuff, """{"abc":3,"more":"a","null":678}"""
+  moreStuff.delete "more"
+  test $moreStuff, """{"abc":3,"null":678}"""
 
-  # moreStuff.delete "more"
-  # test $moreStuff, """{"abc":3,"null":678}"""
+  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
 
-  # moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  moreStuff["alias"] = newJObject()
+  echo moreStuff
+  moreStuff.delete "keyOne"
+  echo moreStuff
 
-  # test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
+  test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
+  moreStuff{"keyOne"} = %*{"keyTwo": 3}
 
-  # moreStuff["alias"] = newJObject()
-  # when false:
-  #   # now let's test aliasing works:
-  #   var aa = moreStuff["alias"]
+  moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
+  block:
+    var x = newJObject()
+    var arr = newJArray()
+    arr.add x
+    x["field"] = %"value"
+    assert $arr == "[{}]"
 
-  #   aa["a"] = %1
-  #   aa["b"] = %3
+  block:
+    var x = newJObject()
+    x["field"] = %"value"
+    var arr = newJArray()
+    arr.add x
+    assert arr == %*[{"field":"value"}]
 
-  # when true:
-  #   delete moreStuff, "keyOne"
-  #   test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
-  # moreStuff["keyOne"] = %*{"keyTwo": 3}
+  block:
+    var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
+    testJson["a", 2, "key"] = %10
+    test $testJson, """{"a":[1,2,{"key":10},4]}"""
 
-  # moreStuff{"keyOne", "keyTwo", "keyThree"} = %*{"abc": 3, "more": 6.6, "null": nil}
-  # moreStuff["keyOne", "keyTwo"] = %"ZZZZZ"
+  block:
+    var mjson = %*{"properties":{"subnet":"a","securitygroup":"b"}}
+    mjson["properties","subnet"] = %""
+    mjson["properties","securitygroup"] = %""
+    test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
 
-  # block:
-  #   var x = newJObject()
-  #   var arr = newJArray()
-  #   arr.add x
-  #   x["field"] = %"value"
-  #   assert $arr == "[{}]"
-
-  # block:
-  #   var x = newJObject()
-  #   x["field"] = %"value"
-  #   var arr = newJArray()
-  #   arr.add x
-  #   assert arr == %*[{"field":"value"}]
-
-  # when false:
-  #   var arr = newJArray()
-  #   arr.add newJObject()
-  #   var x = arr[0]
-  #   x["field"] = %"value"
-  #   assert $arr == """[{"field":"value"}]"""
-
-  # block:
-  #   var testJson = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
-  #   testJson["a", 2, "key"] = %10
-  #   test $testJson, """{"a":[1,2,{"key":10},4]}"""
-
-  # block:
-  #   var mjson = %*{"properties":{"subnet":"a","securitygroup":"b"}}
-  #   mjson["properties","subnet"] = %""
-  #   mjson["properties","securitygroup"] = %""
-  #   test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
-
-  # block:
-  #   # bug #1
-  #   var msg = %*{
-  #     "itemId":25,
-  #     "cityId":15,
-  #     "less": low(BiggestInt),
-  #     "more": high(BiggestInt),
-  #     "million": 1_000_000
-  #   }
-  #   var itemId = msg["itemId"].getInt
-  #   var cityId = msg["cityId"].getInt
-  #   assert itemId == 25
-  #   assert cityId == 15
-  #   doAssert msg["less"].getBiggestInt == low(BiggestInt)
-  #   doAssert msg["more"].getBiggestInt == high(BiggestInt)
-  #   doAssert msg["million"].getBiggestInt == 1_000_000
+  block:
+    # bug #1
+    var msg = %*{
+      "itemId":25,
+      "cityId":15,
+      "less": low(BiggestInt),
+      "more": high(BiggestInt),
+      "million": 1_000_000
+    }
+    var itemId = msg["itemId"].getInt
+    var cityId = msg["cityId"].getInt
+    assert itemId == 25
+    assert cityId == 15
+    doAssert msg["less"].getBiggestInt == low(BiggestInt)
+    doAssert msg["more"].getBiggestInt == high(BiggestInt)
+    doAssert msg["million"].getBiggestInt == 1_000_000
