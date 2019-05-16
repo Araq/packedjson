@@ -581,9 +581,9 @@ proc getStr*(n: JsonNode, default: string = ""): string =
   if n.kind != JString: return default
   let (start, L) = extractSlice(n.t[], n.a)
   result = newString(L)
-  # for i in 0 ..< L:
-  #   result[i] = char(n.t[start+i])
-  copyMem(result[0].addr, n.t[][start].addr, L)
+  for i in 0 ..< L:
+    result[i] = char(n.t[start+i])
+  # copyMem(result[0].addr, n.t[][start].addr, L)
 
 proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
   if n.kind != JInt: return default
@@ -701,11 +701,11 @@ proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
   if keys[0] notin node:
     node[keys[0]] = newJObject()
   for i in 1..keys.high:
-      if i == keys.high:
-          node{keys[0..i-1]}[keys[i]] = value
-      else:
-          node.b = node.t[].high - 1
-          node{keys[0..i-1]}[keys[i]] = newJObject()
+    if i == keys.high:
+      node{keys[0..i-1]}[keys[i]] =  value
+      node.t[].add opcodeEnd
+    else:
+      node{keys[0..i-1]}[keys[i]] = newJObject()
   node.b = node.t[].high - 1
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
@@ -743,7 +743,7 @@ proc parseJson(p: var JsonParser; buf: var seq[byte]) =
   of tkFalse:
     buf.add opcodeFalse
     discard getTok(p)
-  of tkNull:
+  of tkNull,tkError, tkCurlyRi, tkBracketRi, tkColon, tkComma, tkEof:
     buf.add opcodeNull
     discard getTok(p)
   of tkCurlyLe:
@@ -769,8 +769,8 @@ proc parseJson(p: var JsonParser; buf: var seq[byte]) =
       discard getTok(p)
     eat(p, tkBracketRi)
     endContainer(buf)
-  of tkError, tkCurlyRi, tkBracketRi, tkColon, tkComma, tkEof:
-    raiseParseErr(p, "{")
+  # of tkError, tkCurlyRi, tkBracketRi, tkColon, tkComma, tkEof:
+    # raiseParseErr(p, "{")
 
 proc parseJson*(s: Stream, filename: string = ""): JsonNode =
   var p: JsonParser
@@ -806,10 +806,10 @@ when isMainModule:
 
   for row in rows:
       cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
-  cost["AWS"].add "yearly",%1.0
+  cost["AWS"].add "yearly", %""
   echo cost
   echo cost["AWS"]["compute"]["monthly"].getFloat
-  echo cost["AWS"]["yearly"].getFloat
+  echo cost["AWS"]["yearly"].getStr
   template test(a, b) =
     let x = a
     if x != b:
@@ -817,6 +817,8 @@ when isMainModule:
       echo "got:",x
       echo "should be:",b
 
+  let empty = parseJson ""
+  echo empty
   let testJson = parseJson"""{ "a": [1, 2, 3, 4], "b": "asd", "c": "\ud83c\udf83", "d": "\u00E6"}"""
   test $testJson{"a"}[3], "4"
 
@@ -838,9 +840,7 @@ when isMainModule:
   test $moreStuff, """{"abc":3,"null":678,"keyOne":{"keyTwo":{"keyThree":{"abc":3,"more":6.600000000000000,"null":null}}}}"""
 
   moreStuff["alias"] = newJObject()
-  echo moreStuff
   moreStuff.delete "keyOne"
-  echo moreStuff
 
   test $moreStuff, """{"abc":3,"null":678,"alias":{}}"""
   moreStuff{"keyOne"} = %*{"keyTwo": 3}
@@ -872,7 +872,6 @@ when isMainModule:
     test $mjson, """{"properties":{"subnet":"","securitygroup":""}}"""
 
   block:
-    # bug #1
     var msg = %*{
       "itemId":25,
       "cityId":15,
