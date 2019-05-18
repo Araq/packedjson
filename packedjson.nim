@@ -702,11 +702,10 @@ proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
     node[keys[0]] = newJObject()
   for i in 1..keys.high:
     if i == keys.high:
-      node{keys[0..i-1]}[keys[i]] =  value
-      node.t[].add opcodeEnd
+      node{keys[0..i-1]}.add keys[i],value
     else:
-      node{keys[0..i-1]}[keys[i]] = newJObject()
-  node.b = node.t[].high - 1
+      node{keys[0..i-1]}.add keys[i], newJObject()
+  node.b = node.t[].high
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
   for k, v in pairs(node):
@@ -799,13 +798,12 @@ proc parseFile*(filename: string): JsonNode =
 
 when isMainModule:
   var cost = newJObject()
-  cost.t[].add opcodeEnd
   var rows = [["AWS","compute","monthly"],["AWS","network","monthly"],
               ["Alibaba","compute","monthly"],["Alibaba","network","monthly"],
               ["Tencent","compute","monthly"],["Tencent","network","monthly"]]
 
   for row in rows:
-      cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
+    cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
   cost["AWS"].add "yearly", %""
   echo cost
   echo cost["AWS"]["compute"]["monthly"].getFloat
