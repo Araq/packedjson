@@ -698,13 +698,14 @@ proc `{}`*(node: JsonNode, keys: varargs[string]): JsonNode =
       return newJObject()
 
 proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
+  if keys.len == 1:
+    node[keys[0]] = value
+    return
   if keys[0] notin node:
     node[keys[0]] = newJObject()
-  for i in 1..keys.high:
-    if i == keys.high:
-      node{keys[0..i-1]}.add keys[i],value
-    else:
-      node{keys[0..i-1]}.add keys[i], newJObject()
+  for i in 1..keys.high-1:
+    node{keys[0..i-1]}.add keys[i], newJObject()
+  node{keys[0..^2]}.add keys[^1], value
   node.b = node.t[].high
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
@@ -804,7 +805,8 @@ when isMainModule:
 
   for row in rows:
     cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
-  cost["AWS"].add "yearly", %""
+  cost{"AWS", "yearly"} = %""
+  cost{"IBM"} = %""
   echo cost
   echo cost["AWS"]["compute"]["monthly"].getFloat
   echo cost["AWS"]["yearly"].getStr
