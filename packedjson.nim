@@ -26,7 +26,7 @@ needs instead be written as ``myobj["field", "nested"] = %4`` so that the
 changes are end up in the tree.
 ]##
 
-import parsejson, parseutils, streams, strutils, macros
+import parsejson, parseutils, streams, strutils, macros, sequtils
 from unicode import toUTF8, Rune
 
 import std / varints
@@ -539,7 +539,7 @@ proc rawDelete(x: JsonNode, key: string) =
       dec x.b, diff
       return
     pos = nextPos
-  raise newException(KeyError, "key not in object: " & key)
+  # raise newException(KeyError, "key not in object: " & key)
 
 proc delete*(x:JsonNode, key: string) =
   rawDelete(x, key)
@@ -689,23 +689,21 @@ proc `{}`*(node: JsonNode, indexes: varargs[int]): JsonNode =
 proc `{}`*(node: JsonNode, keys: varargs[string]): JsonNode =
   result = node
   for kk in keys:
-    if result.k != JObject: return newJObject()
+    if result.k != JObject: return newJNull()
     block searchLoop:
       for k, v in result.pairs:
         if k == kk:
           result = v
           break searchLoop
-      return newJObject()
+      return newJNull()
 
 proc `{}=`*(node: JsonNode, keys: varargs[string], value: JsonNode) =
-  if keys.len == 1:
-    node[keys[0]] = value
-    return
   if keys[0] notin node:
     node[keys[0]] = newJObject()
   for i in 1..keys.high-1:
-    node{keys[0..i-1]}.add keys[i], newJObject()
-  node{keys[0..^2]}.add keys[^1], value
+    if not node{keys[0..i-1]}.hasKey(keys[i]) or node{keys[0..i]}.kind != JObject:
+      node{keys[0..i]} = newJObject()
+  node{keys[0..^2]}[keys[^1]] = value
   node.b = node.t[].high
 
 proc getOrDefault*(node: JsonNode, key: string): JsonNode =
@@ -799,16 +797,20 @@ proc parseFile*(filename: string): JsonNode =
 
 when isMainModule:
   var cost = newJObject()
-  var rows = [["AWS","compute","monthly"],["AWS","network","monthly"],
+  var rows = [["AWS","compute","cost"],
               ["Alibaba","compute","monthly"],["Alibaba","network","monthly"],
-              ["Tencent","compute","monthly"],["Tencent","network","monthly"]]
+              ["Tencent","compute","monthly"],["AWS","network","cost"],["Tencent","network","monthly"]]
 
   for row in rows:
-    cost{row[0..2]} = %(cost{row[0..2]}.getFloat + 1.0)
-  cost{"AWS", "yearly"} = %""
-  cost{"IBM"} = %""
+    cost{row[0..2]} = %(cost{row[0..2]}.getInt + 1)
+    cost{"AWS", "yearly"} = %""
+    cost{"AWS","compute","cost","monthly"} = %1
+    cost{"AWS","数据中心","cost","monthly"} = %1
+    cost{"AWS","公有云","cost","monthly"} = %1
+    cost{"AWS","compute","cost","yearly"} = %1
+    cost{"IBM"} = %""
   echo cost
-  echo cost["AWS"]["compute"]["monthly"].getFloat
+  echo cost["AWS"]["compute"]["cost"]["yearly"].getFloat
   echo cost["AWS"]["yearly"].getStr
   template test(a, b) =
     let x = a
