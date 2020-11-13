@@ -38,7 +38,7 @@
 ##
 ## These semantics also imply that code like ``myobj["field"]["nested"] = %4``
 ## needs instead be written as ``myobj["field", "nested"] = %4`` so that the
-## changes are end up in the tree.
+## changes end up in the original tree.
 ##
 ## Some simple rules for efficiently using these types are:
 ## * Variables that can be mutated are of type `JsonTree`. Disallow mutations
