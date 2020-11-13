@@ -42,9 +42,9 @@ changes are end up in the tree.
 ]##
 
 import parsejson, parseutils, streams, strutils, macros
-from unicode import toUTF8, Rune
 
 import std / varints
+export JsonParsingError, JsonKindError
 
 type
   JsonNodeKind* = enum ## possible JSON node types
@@ -491,7 +491,7 @@ proc `%`*(o: object): JsonTree =
 proc `%`*(o: ref object): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
   if o.isNil:
-    result = newJNull()
+    result = newJNull().JsonTree
   else:
     result = %(o[])
 
@@ -507,7 +507,7 @@ proc toJson(x: NimNode): NimNode {.compiletime.} =
     result = newNimNode(nnkBracket)
     for i in 0 ..< x.len:
       result.add(toJson(x[i]))
-    result = newCall(bindSym"%", result)
+    result = newCall(bindSym("%", brOpen), result)
   of nnkTableConstr: # object
     if x.len == 0: return newCall(bindSym"newJObject")
     result = newNimNode(nnkStmtListExpr)
@@ -524,9 +524,9 @@ proc toJson(x: NimNode): NimNode {.compiletime.} =
     result = newCall(bindSym"newJNull")
   of nnkPar:
     if x.len == 1: result = toJson(x[0])
-    else: result = newCall(bindSym"%", x)
+    else: result = newCall(bindSym("%", brOpen), x)
   else:
-    result = newCall(bindSym"%", x)
+    result = newCall(bindSym("%", brOpen), x)
 
 macro `%*`*(x: untyped): untyped =
   ## Convert an expression to a JsonNode directly, without having to specify
@@ -925,6 +925,7 @@ proc parseFile*(filename: string): JsonTree =
   if stream == nil:
     raise newException(IOError, "cannot read from file: " & filename)
   result = parseJson(stream, filename)
+
 
 when isMainModule:
   when false:
