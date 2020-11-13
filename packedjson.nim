@@ -106,7 +106,7 @@ type
   JsonNode* = object
     k: JsonNodeKind
     a, b: int
-    t*: ref seq[byte]
+    t: ref seq[byte]
 
   JsonTree* = distinct JsonNode ## a JsonTree is a JsonNode that can be mutated.
 
