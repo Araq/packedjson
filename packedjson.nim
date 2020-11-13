@@ -12,34 +12,43 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
-##[ **Note**: This library distinguishes between ``JsonTree`` and ``JsonNode``
-types. Only ``JsonTree`` can be mutated and accessors like ``[]`` return a
-``JsonNode`` which is merely an immutable view into a ``JsonTree``. This
-prevents most forms of unsupported aliasing operations like:
-
-.. code-block:: nim
-    var arr = newJArray()
-    arr.add newJObject()
-    var x = arr[0]
-    # Error: 'x' is of type JsonNode and cannot be mutated:
-    x["field"] = %"value"
-
-(You can use the ``copy`` operation to create an explicit copy that then
-can be mutated.)
-
-A ``JsonTree`` that is added to another ``JsonTree`` gets copied:
-
-.. code-block:: nim
-    var x = newJObject()
-    var arr = newJArray()
-    arr.add x
-    x["field"] = %"value"
-    assert $arr == "[{}]"
-
-These semantics also imply that code like ``myobj["field"]["nested"] = %4``
-needs instead be written as ``myobj["field", "nested"] = %4`` so that the
-changes are end up in the tree.
-]##
+## **Note**: This library distinguishes between ``JsonTree`` and ``JsonNode``
+## types. Only ``JsonTree`` can be mutated and accessors like ``[]`` return a
+## ``JsonNode`` which is merely an immutable view into a ``JsonTree``. This
+## prevents most forms of unsupported aliasing operations like:
+##
+## .. code-block:: nim
+##     var arr = newJArray()
+##     arr.add newJObject()
+##     var x = arr[0]
+##     # Error: 'x' is of type JsonNode and cannot be mutated:
+##     x["field"] = %"value"
+##
+## (You can use the ``copy`` operation to create an explicit copy that then
+## can be mutated.)
+##
+## A ``JsonTree`` that is added to another ``JsonTree`` gets copied:
+##
+## .. code-block:: nim
+##     var x = newJObject()
+##     var arr = newJArray()
+##     arr.add x
+##     x["field"] = %"value"
+##     assert $arr == "[{}]"
+##
+## These semantics also imply that code like ``myobj["field"]["nested"] = %4``
+## needs instead be written as ``myobj["field", "nested"] = %4`` so that the
+## changes end up in the original tree.
+##
+## Some simple rules for efficiently using these types are:
+## * Variables that can be mutated are of type `JsonTree`. Disallow mutations
+##   by using `JsonNode`.
+## * Have every return/output parameter type be `JsonTree`. Make sure that you
+##   return a copy or a fresh `JsonTree`.
+## * Input parameters should be of type `JsonNode`. Use `copy` to get a value
+##   that can be mutated, if needed.
+## * Remove unnecessary copies by casting to `JsonTree` when you are sure about
+##   it, i.e. a `JsonNode` obtained from a `JsonTree` another function returned.
 
 import parsejson, parseutils, streams, strutils, macros
 
