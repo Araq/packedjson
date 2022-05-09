@@ -940,7 +940,7 @@ proc hash*(x: JsonNode): Hash {.noSideEffect.} =
   h = h !& hash(x.k)
   h = h !& hash(x.a)
   h = h !& hash(x.b)
-  h = h !& hash(cast[pointer](x.t))
+  h = h !& hash(x.t[])
   result = !$h
 
 when isMainModule:
