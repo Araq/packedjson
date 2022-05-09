@@ -50,7 +50,7 @@
 ## * Remove unnecessary copies by casting to `JsonTree` when you are sure about
 ##   it, i.e. a `JsonNode` obtained from a `JsonTree` another function returned.
 
-import parsejson, parseutils, streams, strutils, macros
+import parsejson, parseutils, streams, strutils, macros, hashes
 
 import std / varints
 export JsonParsingError, JsonKindError
@@ -782,7 +782,7 @@ proc `[]`*(node: JsonNode, index: int): JsonNode =
   for x in items(node):
     if i == 0: return x
     dec i
-  raise newException(IndexError, "index out of bounds")
+  raise newException(IndexDefect, "index out of bounds")
 
 proc contains*(node: JsonNode, key: string): bool =
   ## Checks if `key` exists in `node`.
@@ -935,6 +935,8 @@ proc parseFile*(filename: string): JsonTree =
     raise newException(IOError, "cannot read from file: " & filename)
   result = parseJson(stream, filename)
 
+proc hash*(x: JsonNode): Hash {.noSideEffect.} =
+  result = hash(x.t[], x.a, x.b)
 
 when isMainModule:
   when false:
