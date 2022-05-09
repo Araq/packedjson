@@ -936,12 +936,7 @@ proc parseFile*(filename: string): JsonTree =
   result = parseJson(stream, filename)
 
 proc hash*(x: JsonNode): Hash {.noSideEffect.} =
-  var h: Hash = 0
-  h = h !& hash(x.k)
-  h = h !& hash(x.a)
-  h = h !& hash(x.b)
-  h = h !& hash(x.t[])
-  result = !$h
+  result = hash(x.t[], x.a, x.b)
 
 when isMainModule:
   when false:
