@@ -322,7 +322,10 @@ proc rawAdd(obj: var JsonNode; child: seq[byte]; a, b: int) =
   # now move the tail to the new end so that we can insert effectively
   # into the middle:
   for i in countdown(oldfull+L-1, pa+L):
-    shallowCopy(obj.t[][i], obj.t[][i-L])
+    when defined(gcArc) or defined(gcOrc):
+      obj.t[][i] = move obj.t[][i-L]
+    else:
+      shallowCopy(obj.t[][i], obj.t[][i-L])
   # insert into the middle:
   for i in 0 ..< L:
     obj.t[][pa + i] = child[a + i]
@@ -368,9 +371,17 @@ proc rawPut(obj: var JsonNode, oldval: JsonNode, key: string, val: JsonNode): in
       setLen(obj.t[], oldfull+result)
       # now move the tail to the new end so that we can insert effectively
       # into the middle:
-      for i in countdown(oldfull+result-1, oldval.a+newlen): shallowCopy(obj.t[][i], obj.t[][i-result])
+      for i in countdown(oldfull+result-1, oldval.a+newlen):
+        when defined(gcArc) or defined(gcOrc):
+          obj.t[][i] = move obj.t[][i-result]
+        else:
+          shallowCopy(obj.t[][i], obj.t[][i-result])
     else:
-      for i in countup(oldval.a+newlen, oldfull+result-1): shallowCopy(obj.t[][i], obj.t[][i-result])
+      for i in countup(oldval.a+newlen, oldfull+result-1):
+        when defined(gcArc) or defined(gcOrc):
+          obj.t[][i] = move obj.t[][i-result]
+        else:
+          shallowCopy(obj.t[][i], obj.t[][i-result])
       # cut down:
       setLen(obj.t[], oldfull+result)
     # overwrite old value:
@@ -450,7 +461,11 @@ proc rawDelete(x: var JsonNode, key: string) =
     if isMatch:
       let diff = nextPos - begin
       let oldfull = x.t[].len
-      for i in countup(begin, oldfull-diff-1): shallowCopy(x.t[][i], x.t[][i+diff])
+      for i in countup(begin, oldfull-diff-1):
+        when defined(gcArc) or defined(gcOrc):
+          x.t[][i] = move x.t[][i+diff]
+        else:
+          shallowCopy(x.t[][i], x.t[][i+diff])
       setLen(x.t[], oldfull-diff)
       dec x.b, diff
       return
