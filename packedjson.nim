@@ -12,9 +12,9 @@
 ## as 80%. It can be faster or much slower than the stdlib's JSON, depending on the
 ## workload.
 
-## **Note**: This library distinguishes between ``JsonTree`` and ``JsonNode``
-## types. Only ``JsonTree`` can be mutated and accessors like ``[]`` return a
-## ``JsonNode`` which is merely an immutable view into a ``JsonTree``. This
+## **Note**: This library distinguishes between `JsonTree` and `JsonNode`
+## types. Only `JsonTree` can be mutated and accessors like `[]` return a
+## `JsonNode` which is merely an immutable view into a `JsonTree`. This
 ## prevents most forms of unsupported aliasing operations like:
 ##
 ## .. code-block:: nim
@@ -24,10 +24,10 @@
 ##     # Error: 'x' is of type JsonNode and cannot be mutated:
 ##     x["field"] = %"value"
 ##
-## (You can use the ``copy`` operation to create an explicit copy that then
+## (You can use the `copy` operation to create an explicit copy that then
 ## can be mutated.)
 ##
-## A ``JsonTree`` that is added to another ``JsonTree`` gets copied:
+## A `JsonTree` that is added to another `JsonTree` gets copied:
 ##
 ## .. code-block:: nim
 ##     var x = newJObject()
@@ -36,8 +36,8 @@
 ##     x["field"] = %"value"
 ##     assert $arr == "[{}]"
 ##
-## These semantics also imply that code like ``myobj["field"]["nested"] = %4``
-## needs instead be written as ``myobj["field", "nested"] = %4`` so that the
+## These semantics also imply that code like `myobj["field"]["nested"] = %4`
+## needs instead be written as `myobj["field", "nested"] = %4` so that the
 ## changes end up in the original tree.
 ##
 ## Some simple rules for efficiently using these types are:
@@ -351,7 +351,7 @@ proc add*(obj: var JsonTree, key: string, val: JsonNode) =
   ## Sets a field from a `JObject`. **Warning**: It is currently not checked
   ## but assumed that the object does not yet have a field named `key`.
   assert obj.kind == JObject
-  let k = newJstring(key)
+  let k = newJString(key)
   # XXX optimize this further!
   rawAdd(JsonNode obj, k.t[], 0, high(k.t[]))
   rawAddWithNull(JsonNode obj, val)
@@ -498,7 +498,7 @@ template `%`*(j: JsonNode): JsonNode = j
 
 proc `%`*(keyVals: openArray[tuple[key: string, val: JsonNode]]): JsonTree =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
-  if keyvals.len == 0: return newJArray()
+  if keyVals.len == 0: return newJArray()
   result = newJObject()
   for key, val in items(keyVals): result.add key, val
 
@@ -524,7 +524,7 @@ proc `%`*(o: enum): JsonNode =
   ## string. Creates a new ``JString JsonNode``.
   result = %($o)
 
-proc toJson(x: NimNode): NimNode {.compiletime.} =
+proc toJson(x: NimNode): NimNode =
   case x.kind
   of nnkBracket: # array
     if x.len == 0: return newCall(bindSym"newJArray")
@@ -535,7 +535,7 @@ proc toJson(x: NimNode): NimNode {.compiletime.} =
   of nnkTableConstr: # object
     if x.len == 0: return newCall(bindSym"newJObject")
     result = newNimNode(nnkStmtListExpr)
-    var res = gensym(nskVar, "cons")
+    var res = genSym(nskVar, "cons")
     result.add newVarStmt(res, newCall(bindSym"newJObject"))
     for i in 0 ..< x.len:
       x[i].expectKind nnkExprColonExpr
