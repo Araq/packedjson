@@ -1,11 +1,10 @@
 import ".." / packedjson, macros, strutils, options, tables
 # -- Json deserialiser. --
 
-template verifyJsonKind(node: JsonNode, kinds: set[JsonNodeKind],
-                      ast: string) =
+template verifyJsonKind(node: JsonNode, kinds: set[JsonNodeKind], ast: string) =
   if node.kind == JNull:
     raise newException(KeyError, "key not found: " & ast)
-  elif  node.kind notin kinds:
+  elif node.kind notin kinds:
     let msg = "Incorrect JSON kind. Wanted '$1' in '$2' but got '$3'." % [
       $kinds,
       ast,
@@ -149,7 +148,7 @@ proc detectIncompatibleType(typeExpr, lineinfoNode: NimNode): void =
   if typeExpr.kind == nnkTupleConstr:
     error("Use a named tuple instead of: " & typeExpr.repr, lineinfoNode)
 
-proc foldObjectBody(dst, typeNode, tmpSym, jsonNode, jsonPath, originalJsonPathLen: NimNode): void {.compileTime.} =
+proc foldObjectBody(dst, typeNode, tmpSym, jsonNode, jsonPath, originalJsonPathLen: NimNode) =
   case typeNode.kind
   of nnkEmpty:
     discard
